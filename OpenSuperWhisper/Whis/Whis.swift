@@ -806,3 +806,7 @@ public class MyWhisperContext {
         whisper_log_set(logCallback, userData)
     }
 }
+
+// MARK: - Sendable Conformance
+// MyWhisperContext wraps C pointers from whisper.cpp which is thread-safe for reads
+extension MyWhisperContext: @unchecked Sendable {}
