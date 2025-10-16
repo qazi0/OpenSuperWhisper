@@ -11,6 +11,7 @@ extension KeyboardShortcuts.Name {
     static let escape = Self("escape", default: .init(.escape))
 }
 
+@MainActor
 class ShortcutManager {
     static let shared = ShortcutManager()
 
