@@ -118,7 +118,14 @@ class SettingsViewModel: ObservableObject {
             }
         
         let parakeetModels = ParakeetModelManager.shared.availableModels()
-        
+            .map { modelName in
+                LocalSpeechModel(
+                    name: modelName,
+                    vendor: .parakeet,
+                    path: ParakeetModelManager.shared.modelDirectory(for: modelName)
+                )
+            }
+
         let combined = (whisperModels + parakeetModels).sorted { $0.name < $1.name }
         availableModels = combined
         
@@ -226,91 +233,118 @@ struct SettingsView: View {
     private var modelSettings: some View {
         Form {
             Section {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("Whisper Model")
-                        .font(.headline)
-                        .foregroundColor(.primary)
-                    
-                    Picker("Model", selection: $viewModel.selectedModel) {
-                        ForEach(viewModel.availableModels) { model in
-                            Text("\(model.name) (\(model.vendor.displayName))")
-                                .tag(model as LocalSpeechModel?)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color(.controlBackgroundColor))
-                    .cornerRadius(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("Models Directory:")
-                                .font(.subheadline)
-                            Spacer()
-                            Button(action: {
-                                NSWorkspace.shared.open(WhisperModelManager.shared.modelsDirectory)
-                            }) {
-                                Label("Open Folder", systemImage: "folder")
-                                    .font(.subheadline)
-                            }
-                            .buttonStyle(.borderless)
-                            .help("Open models directory")
-                        }
-                        Text(WhisperModelManager.shared.modelsDirectory.path)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .textSelection(.enabled)
-                            .padding(8)
-                            .background(Color(.textBackgroundColor).opacity(0.5))
-                            .cornerRadius(6)
-                        
-                        HStack {
-                            Text("Parakeet Directory:")
-                                .font(.subheadline)
-                            Spacer()
-                            Button(action: {
-                                NSWorkspace.shared.open(ParakeetModelManager.shared.modelsDirectory)
-                            }) {
-                                Label("Open Folder", systemImage: "folder")
-                                    .font(.subheadline)
-                            }
-                            .buttonStyle(.borderless)
-                            .help("Open Parakeet models directory")
-                        }
-                        
-                        Text(ParakeetModelManager.shared.modelsDirectory.path)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .textSelection(.enabled)
-                            .padding(8)
-                            .background(Color(.textBackgroundColor).opacity(0.5))
-                            .cornerRadius(6)
-                    }
-                    .padding(.top, 8)
-                    
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("To display other models in the list, you need to download a ggml bin file and place it in the models folder. Then restart the application.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        
-                        Link("Download models here", destination: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/tree/main")!)
-                        .font(.caption)
-                        
-                        Link("Download Parakeet models", destination: URL(string: "https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3")!)
-                            .font(.caption)
-                    }
-                    .padding(.top, 8)
-                }
-                .padding()
-                .background(Color(.controlBackgroundColor).opacity(0.3))
-                .cornerRadius(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                modelSettingsContent
             }
         }
         .padding()
+    }
+
+    private var modelSettingsContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Whisper Model")
+                .font(.headline)
+                .foregroundColor(.primary)
+
+            modelPickerView
+
+            directoriesView
+
+            downloadLinksView
+        }
+        .padding()
+        .background(Color(.controlBackgroundColor).opacity(0.3))
+        .cornerRadius(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var modelPickerView: some View {
+        Picker("Model", selection: $viewModel.selectedModel) {
+            ForEach(viewModel.availableModels) { model in
+                Text("\(model.name) (\(model.vendor.displayName))")
+                    .tag(model as LocalSpeechModel?)
+            }
+        }
+        .pickerStyle(.menu)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color(.controlBackgroundColor))
+        .cornerRadius(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var directoriesView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            whisperDirectoryView
+            parakeetDirectoryView
+        }
+        .padding(.top, 8)
+    }
+
+    private var whisperDirectoryView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Models Directory:")
+                    .font(.subheadline)
+                Spacer()
+                Button(action: {
+                    NSWorkspace.shared.open(WhisperModelManager.shared.modelsDirectory)
+                }) {
+                    Label("Open Folder", systemImage: "folder")
+                        .font(.subheadline)
+                }
+                .buttonStyle(.borderless)
+                .help("Open models directory")
+            }
+            Text(WhisperModelManager.shared.modelsDirectory.path)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .textSelection(.enabled)
+                .padding(8)
+                .background(Color(.textBackgroundColor).opacity(0.5))
+                .cornerRadius(6)
+        }
+    }
+
+    private var parakeetDirectoryView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Parakeet Directory:")
+                    .font(.subheadline)
+                Spacer()
+                Button(action: {
+                    NSWorkspace.shared.open(ParakeetModelManager.shared.modelsDirectory)
+                }) {
+                    Label("Open Folder", systemImage: "folder")
+                        .font(.subheadline)
+                }
+                .buttonStyle(.borderless)
+                .help("Open Parakeet models directory")
+            }
+
+            Text(ParakeetModelManager.shared.modelsDirectory.path)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .textSelection(.enabled)
+                .padding(8)
+                .background(Color(.textBackgroundColor).opacity(0.5))
+                .cornerRadius(6)
+        }
+    }
+
+    private var downloadLinksView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("To display other models in the list, you need to download a ggml bin file and place it in the models folder. Then restart the application.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Link("Download models here", destination: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/tree/main")!)
+                .font(.caption)
+
+            Link("Download Parakeet models", destination: URL(string: "https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3")!)
+                .font(.caption)
+        }
+        .padding(.top, 8)
     }
     
     private var transcriptionSettings: some View {
