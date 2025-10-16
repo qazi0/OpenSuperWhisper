@@ -21,6 +21,7 @@ struct OptionalUserDefault<T> {
     }
 }
 
+@MainActor
 final class AppPreferences {
     static let shared = AppPreferences()
     private init() {}
@@ -28,6 +29,14 @@ final class AppPreferences {
     // Model settings
     @OptionalUserDefault(key: "selectedModelPath")
     var selectedModelPath: String?
+    
+    @UserDefault(key: "selectedModelVendor", defaultValue: SpeechModelVendor.whisper.rawValue)
+    private var selectedModelVendorRaw: String
+    
+    var selectedModelVendor: SpeechModelVendor {
+        get { SpeechModelVendor(rawValue: selectedModelVendorRaw) ?? .whisper }
+        set { selectedModelVendorRaw = newValue.rawValue }
+    }
     
     @UserDefault(key: "whisperLanguage", defaultValue: "en")
     var whisperLanguage: String
