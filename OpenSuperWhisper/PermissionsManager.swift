@@ -7,6 +7,7 @@ enum Permission {
     case accessibility
 }
 
+@MainActor
 class PermissionsManager: ObservableObject {
     @Published var isMicrophonePermissionGranted = false
     @Published var isAccessibilityPermissionGranted = false
@@ -30,6 +31,7 @@ class PermissionsManager: ObservableObject {
     }
 
     deinit {
+        // Avoid isolated deinit (Swift 6 experimental). Perform minimal teardown.
         stopPermissionChecking()
         NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
@@ -37,34 +39,32 @@ class PermissionsManager: ObservableObject {
     private func startPermissionChecking() {
         // Timer is scheduled on the main run loop
         permissionCheckTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            self?.checkMicrophonePermission()
-            self?.checkAccessibilityPermission()
+            Task { @MainActor [weak self] in
+                self?.checkMicrophonePermission()
+                self?.checkAccessibilityPermission()
+            }
         }
     }
 
-    private func stopPermissionChecking() {
-        permissionCheckTimer?.invalidate()
-        permissionCheckTimer = nil
+    nonisolated private func stopPermissionChecking() {
+        Task { @MainActor [weak self] in
+            self?.permissionCheckTimer?.invalidate()
+            self?.permissionCheckTimer = nil
+        }
     }
 
     func checkMicrophonePermission() {
-        let status = AVCaptureDevice.authorizationStatus(for: .audio)
-
-        DispatchQueue.main.async { [weak self] in
-            switch status {
-            case .authorized:
-                self?.isMicrophonePermissionGranted = true
-            default:
-                self?.isMicrophonePermissionGranted = false
-            }
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            isMicrophonePermissionGranted = true
+        default:
+            isMicrophonePermissionGranted = false
         }
     }
 
     func checkAccessibilityPermission() {
         let granted = AXIsProcessTrusted()
-        DispatchQueue.main.async { [weak self] in
-            self?.isAccessibilityPermissionGranted = granted
-        }
+        isAccessibilityPermissionGranted = granted
     }
 
     func requestMicrophonePermissionOrOpenSystemPreferences() {
@@ -100,9 +100,7 @@ class PermissionsManager: ObservableObject {
         }
 
         if let url = URL(string: urlString) {
-            DispatchQueue.main.async {
-                NSWorkspace.shared.open(url)
-            }
+            NSWorkspace.shared.open(url)
         }
     }
 }
