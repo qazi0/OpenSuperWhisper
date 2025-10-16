@@ -1,7 +1,15 @@
-import AVFoundation
-import Foundation
+@preconcurrency import AVFoundation
+@preconcurrency import Foundation
+import ParakeetMLX
+import MLX
+
+@preconcurrency import ObjectiveC
+
+// Make UnsafeMutablePointer<Bool> Sendable for use in Task.detached
+extension UnsafeMutablePointer: @unchecked @retroactive Sendable where Pointee == Bool {}
 
 @MainActor
+@preconcurrency
 class TranscriptionService: ObservableObject {
     static let shared = TranscriptionService()
     
@@ -12,6 +20,8 @@ class TranscriptionService: ObservableObject {
     @Published private(set) var progress: Float = 0.0
     
     private var context: MyWhisperContext?
+    private var parakeetModel: ParakeetTDT?
+    private var loadedModelVendor: SpeechModelVendor?
     private var totalDuration: Float = 0.0
     private var transcriptionTask: Task<String, Error>? = nil
     private var isCancelled = false
@@ -46,22 +56,59 @@ class TranscriptionService: ObservableObject {
     
     private func loadModel() {
         print("Loading model")
-        if let modelPath = AppPreferences.shared.selectedModelPath {
-            isLoading = true
-            
-            // Capture the weak self reference before the task
-            weak var weakSelf = self
-            
-            Task.detached(priority: .userInitiated) {
+        guard let modelPath = AppPreferences.shared.selectedModelPath else {
+            print("⚠️ No model path set in preferences")
+            return
+        }
+        let vendor = AppPreferences.shared.selectedModelVendor
+        print("📦 Model path: \(modelPath)")
+        print("📦 Model vendor: \(vendor.displayName)")
+        isLoading = true
+
+        // Capture cache directory on main actor to avoid cross-actor access later
+        let cacheDirectory = ParakeetModelManager.shared.modelsDirectory
+
+        Task.detached(priority: .userInitiated) {
+            switch vendor {
+            case .whisper:
                 let params = WhisperContextParams()
                 let newContext = MyWhisperContext.initFromFile(path: modelPath, params: params)
-                
+
                 await MainActor.run {
-                    // Use the weak self reference inside MainActor.run
-                    guard let self = weakSelf else { return }
-                    self.context = newContext
-                    self.isLoading = false
-                    print("Model loaded")
+                    let service = TranscriptionService.shared
+                    service.context = newContext
+                    service.parakeetModel = nil
+                    service.loadedModelVendor = .whisper
+                    service.isLoading = false
+                    print("✅ Whisper model loaded successfully")
+                }
+            case .parakeet:
+                print("🔄 Loading Parakeet model from: \(modelPath)")
+                do {
+                    let model = try await loadParakeetModel(
+                        from: modelPath,
+                        dtype: .float32,
+                        cacheDirectory: cacheDirectory
+                    )
+
+                    await MainActor.run {
+                        let service = TranscriptionService.shared
+                        service.parakeetModel = model
+                        service.context = nil
+                        service.loadedModelVendor = .parakeet
+                        service.isLoading = false
+                        service.progress = 0.0
+                        print("✅ Parakeet model loaded successfully")
+                    }
+                } catch {
+                    await MainActor.run {
+                        let service = TranscriptionService.shared
+                        service.parakeetModel = nil
+                        service.loadedModelVendor = nil
+                        service.isLoading = false
+                        print("❌ Failed to load Parakeet model: \(error)")
+                        print("   Error details: \(error.localizedDescription)")
+                    }
                 }
             }
         }
@@ -69,26 +116,63 @@ class TranscriptionService: ObservableObject {
     
     func reloadModel(with path: String) {
         print("Reloading model")
+        print("📦 New model path: \(path)")
         isLoading = true
-        
-        // Capture the weak self reference before the task
-        weak var weakSelf = self
-        
+
+        // Capture main-actor values before detaching
+        let cacheDirectory = ParakeetModelManager.shared.modelsDirectory
+        let vendor = AppPreferences.shared.selectedModelVendor
+        print("📦 Model vendor: \(vendor.displayName)")
+
         Task.detached(priority: .userInitiated) {
-            let params = WhisperContextParams()
-            let newContext = MyWhisperContext.initFromFile(path: path, params: params)
-            
-            await MainActor.run {
-                // Use the weak self reference inside MainActor.run
-                guard let self = weakSelf else { return }
-                self.context = newContext
-                self.isLoading = false
-                print("Model reloaded")
+            switch vendor {
+            case .whisper:
+                let params = WhisperContextParams()
+                let newContext = MyWhisperContext.initFromFile(path: path, params: params)
+
+                await MainActor.run {
+                    let service = TranscriptionService.shared
+                    service.context = newContext
+                    service.parakeetModel = nil
+                    service.loadedModelVendor = .whisper
+                    service.isLoading = false
+                    print("✅ Whisper model reloaded successfully")
+                }
+            case .parakeet:
+                print("🔄 Reloading Parakeet model from: \(path)")
+                do {
+                    let model = try await loadParakeetModel(
+                        from: path,
+                        dtype: .float32,
+                        cacheDirectory: cacheDirectory
+                    )
+
+                    await MainActor.run {
+                        let service = TranscriptionService.shared
+                        service.parakeetModel = model
+                        service.context = nil
+                        service.loadedModelVendor = .parakeet
+                        service.isLoading = false
+                        service.progress = 0.0
+                        print("✅ Parakeet model reloaded successfully")
+                    }
+                } catch {
+                    await MainActor.run {
+                        let service = TranscriptionService.shared
+                        service.parakeetModel = nil
+                        service.loadedModelVendor = nil
+                        service.isLoading = false
+                        print("❌ Failed to reload Parakeet model: \(error)")
+                        print("   Error details: \(error.localizedDescription)")
+                    }
+                }
             }
         }
     }
     
     func transcribeAudio(url: URL, settings: Settings) async throws -> String {
+        let vendor = AppPreferences.shared.selectedModelVendor
+        
         await MainActor.run {
             self.progress = 0.0
             self.isTranscribing = true
@@ -96,12 +180,18 @@ class TranscriptionService: ObservableObject {
             self.currentSegment = ""
             self.isCancelled = false
             
-            // Initialize a new abort flag and set it to false
-            if self.abortFlag != nil {
-                self.abortFlag?.deallocate()
+            if vendor == .whisper {
+                if self.abortFlag != nil {
+                    self.abortFlag?.deallocate()
+                }
+                self.abortFlag = UnsafeMutablePointer<Bool>.allocate(capacity: 1)
+                self.abortFlag?.initialize(to: false)
+            } else {
+                if self.abortFlag != nil {
+                    self.abortFlag?.deallocate()
+                    self.abortFlag = nil
+                }
             }
-            self.abortFlag = UnsafeMutablePointer<Bool>.allocate(capacity: 1)
-            self.abortFlag?.initialize(to: false)
         }
         
         defer {
@@ -123,165 +213,256 @@ class TranscriptionService: ObservableObject {
             self.totalDuration = durationInSeconds
         }
         
-        // Get the context and abort flag before detaching to a background task
-        let contextForTask = context
-        let abortFlagForTask = abortFlag
-        
-        // Create and store the task
-        let task = Task.detached(priority: .userInitiated) { [self] in
-            // Check for cancellation
-            try Task.checkCancellation()
-            
-            guard let context = contextForTask else {
-                throw TranscriptionError.contextInitializationFailed
-            }
-            
-            guard let samples = try await self.convertAudioToPCM(fileURL: url) else {
-                throw TranscriptionError.audioConversionFailed
-            }
-            
-            // Check for cancellation
-            try Task.checkCancellation()
-            
-            let nThreads = 4
-            
-            guard context.pcmToMel(samples: samples, nSamples: samples.count, nThreads: nThreads) else {
-                throw TranscriptionError.processingFailed
-            }
-            
-            // Check for cancellation
-            try Task.checkCancellation()
-            
-            guard context.encode(offset: 0, nThreads: nThreads) else {
-                throw TranscriptionError.processingFailed
-            }
-            
-            // Check for cancellation
-            try Task.checkCancellation()
-            
-            var params = WhisperFullParams()
-            
-            params.strategy = settings.useBeamSearch ? .beamSearch : .greedy
-            params.nThreads = Int32(nThreads)
-            params.noTimestamps = !settings.showTimestamps
-            params.suppressBlank = settings.suppressBlankAudio
-            params.translate = settings.translateToEnglish
-            params.language = settings.selectedLanguage != "auto" ? settings.selectedLanguage : nil
-            params.detectLanguage = false // should be false, whisper handles language detection by language property.
-            
-            params.temperature = Float(settings.temperature)
-            params.noSpeechThold = Float(settings.noSpeechThreshold)
-            params.initialPrompt = settings.initialPrompt.isEmpty ? nil : settings.initialPrompt
-            
-            // Set up the abort callback
-            typealias GGMLAbortCallback = @convention(c) (UnsafeMutableRawPointer?) -> Bool
-            
-            let abortCallback: GGMLAbortCallback = { userData in
-                guard let userData = userData else { return false }
-                let flag = userData.assumingMemoryBound(to: Bool.self)
-                return flag.pointee
-            }
-            
-            if settings.useBeamSearch {
-                params.beamSearchBeamSize = Int32(settings.beamSize)
-            }
-            
-            params.printRealtime = true
-            params.print_realtime = true
-            
-            // Set up the segment callback
-            let segmentCallback: @convention(c) (OpaquePointer?, OpaquePointer?, Int32, UnsafeMutableRawPointer?) -> Void = { ctx, state, n_new, user_data in
-                guard let ctx = ctx,
-                      let userData = user_data,
-                      let service = Unmanaged<TranscriptionService>.fromOpaque(userData).takeUnretainedValue() as TranscriptionService?
-                else { return }
-                
-                // Process the segment in a non-isolated context
-                let segmentInfo = service.processNewSegment(context: ctx, state: state, nNew: Int(n_new))
-                
-                // Update UI on the main thread
-                Task { @MainActor in
-                    // Check if cancelled
-                    if service.isCancelled { return }
-                    
-                    if !segmentInfo.text.isEmpty {
-                        service.currentSegment = segmentInfo.text
-                        service.transcribedText += segmentInfo.text + "\n"
-                    }
-                    
-                    if service.totalDuration > 0 && segmentInfo.timestamp > 0 {
-                        let newProgress = min(segmentInfo.timestamp / service.totalDuration, 1.0)
-                        service.progress = newProgress
-                    }
+        let task: Task<String, Error>
+
+        switch vendor {
+        case .whisper:
+            let contextForTask = context
+            let abortFlagForTask = abortFlag
+
+            // Capture service reference before entering detached task
+            let serviceRef = TranscriptionService.shared
+
+            // Extract the context data we need before entering detached task
+            let contextPtr = contextForTask
+            let abortPtr = abortFlagForTask
+
+            task = Task.detached(priority: .userInitiated) {
+                try Task.checkCancellation()
+
+                guard let context = contextPtr else {
+                    throw TranscriptionError.contextInitializationFailed
                 }
-            }
-            
-            // Set the callbacks in the params
-            params.newSegmentCallback = segmentCallback
-            params.newSegmentCallbackUserData = Unmanaged.passUnretained(self).toOpaque()
-            
-            // Convert to C params and set the abort callback
-            var cParams = params.toC()
-            cParams.abort_callback = abortCallback
-            
-            // Set the abort flag user data
-            if let abortFlag = abortFlagForTask {
-                cParams.abort_callback_user_data = UnsafeMutableRawPointer(abortFlag)
-            }
-            
-            // Check for cancellation
-            try Task.checkCancellation()
-            
-            guard context.full(samples: samples, params: &cParams) else {
-                throw TranscriptionError.processingFailed
-            }
-            
-            // Check for cancellation
-            try Task.checkCancellation()
-            
-            var text = ""
-            let nSegments = context.fullNSegments
-            
-            for i in 0..<nSegments {
-                // Check for cancellation periodically
-                if i % 5 == 0 {
-                    try Task.checkCancellation()
+
+                guard let samples = try await TranscriptionService.convertAudioToPCM(fileURL: url) else {
+                    throw TranscriptionError.audioConversionFailed
                 }
                 
-                guard let segmentText = context.fullGetSegmentText(iSegment: i) else { continue }
+                try Task.checkCancellation()
                 
+                let nThreads = 4
+                
+                guard context.pcmToMel(samples: samples, nSamples: samples.count, nThreads: nThreads) else {
+                    throw TranscriptionError.processingFailed
+                }
+                
+                try Task.checkCancellation()
+                
+                guard context.encode(offset: 0, nThreads: nThreads) else {
+                    throw TranscriptionError.processingFailed
+                }
+                
+                try Task.checkCancellation()
+                
+                var params = WhisperFullParams()
+                
+                params.strategy = settings.useBeamSearch ? .beamSearch : .greedy
+                params.nThreads = Int32(nThreads)
+                params.noTimestamps = !settings.showTimestamps
+                params.suppressBlank = settings.suppressBlankAudio
+                params.translate = settings.translateToEnglish
+                params.language = settings.selectedLanguage != "auto" ? settings.selectedLanguage : nil
+                params.detectLanguage = false
+                
+                params.temperature = Float(settings.temperature)
+                params.noSpeechThold = Float(settings.noSpeechThreshold)
+                params.initialPrompt = settings.initialPrompt.isEmpty ? nil : settings.initialPrompt
+                
+                typealias GGMLAbortCallback = @convention(c) (UnsafeMutableRawPointer?) -> Bool
+                
+                let abortCallback: GGMLAbortCallback = { userData in
+                    guard let userData = userData else { return false }
+                    let flag = userData.assumingMemoryBound(to: Bool.self)
+                    return flag.pointee
+                }
+                
+                if settings.useBeamSearch {
+                    params.beamSearchBeamSize = Int32(settings.beamSize)
+                }
+                
+                params.printRealtime = true
+                params.print_realtime = true
+                
+                let segmentCallback: @convention(c) (OpaquePointer?, OpaquePointer?, Int32, UnsafeMutableRawPointer?) -> Void = { ctx, state, n_new, user_data in
+                    guard let ctx = ctx,
+                          let userData = user_data,
+                          let service = Unmanaged<TranscriptionService>.fromOpaque(userData).takeUnretainedValue() as TranscriptionService?
+                    else { return }
+                    
+                    let segmentInfo = service.processNewSegment(context: ctx, state: state, nNew: Int(n_new))
+                    
+                    Task { @MainActor in
+                        if service.isCancelled { return }
+                        
+                        if !segmentInfo.text.isEmpty {
+                            service.currentSegment = segmentInfo.text
+                            service.transcribedText += segmentInfo.text + "\n"
+                        }
+                        
+                        if service.totalDuration > 0 && segmentInfo.timestamp > 0 {
+                            let newProgress = min(segmentInfo.timestamp / service.totalDuration, 1.0)
+                            service.progress = newProgress
+                        }
+                    }
+                }
+                
+                params.newSegmentCallback = segmentCallback
+                params.newSegmentCallbackUserData = Unmanaged.passUnretained(serviceRef).toOpaque()
+                
+                var cParams = params.toC()
+                cParams.abort_callback = abortCallback
+                
+                if let abortFlag = abortPtr {
+                    cParams.abort_callback_user_data = UnsafeMutableRawPointer(abortFlag)
+                }
+                
+                try Task.checkCancellation()
+                
+                guard context.full(samples: samples, params: &cParams) else {
+                    throw TranscriptionError.processingFailed
+                }
+                
+                try Task.checkCancellation()
+                
+                var text = ""
+                let nSegments = context.fullNSegments
+                
+                for i in 0..<nSegments {
+                    if i % 5 == 0 {
+                        try Task.checkCancellation()
+                    }
+                    
+                    guard let segmentText = context.fullGetSegmentText(iSegment: i) else { continue }
+                    
+                    if settings.showTimestamps {
+                        let t0 = context.fullGetSegmentT0(iSegment: i)
+                        let t1 = context.fullGetSegmentT1(iSegment: i)
+                        text += String(format: "[%.1f->%.1f] ", Float(t0) / 100.0, Float(t1) / 100.0)
+                    }
+                    text += segmentText + "\n"
+                }
+                
+                let cleanedText = text
+                    .replacingOccurrences(of: "[MUSIC]", with: "")
+                    .replacingOccurrences(of: "[BLANK_AUDIO]", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                
+                var processedText = cleanedText
+                if ["zh", "ja", "ko"].contains(settings.selectedLanguage),
+                   settings.useAsianAutocorrect,
+                   !cleanedText.isEmpty
+                {
+                    processedText = AutocorrectWrapper.format(cleanedText)
+                }
+                
+                let finalText = processedText.isEmpty ? "No speech detected in the audio" : processedText
+                
+                await MainActor.run {
+                    if !serviceRef.isCancelled {
+                        serviceRef.transcribedText = finalText
+                        serviceRef.progress = 1.0
+                    }
+                }
+                
+                return finalText
+            }
+        case .parakeet:
+            let modelForTask = parakeetModel
+            print("🎙️ Starting Parakeet transcription")
+
+            // Capture service reference before entering detached task
+            let serviceRef = TranscriptionService.shared
+
+            task = Task.detached(priority: .userInitiated) {
+                try Task.checkCancellation()
+
+                guard let model = modelForTask else {
+                    print("❌ Parakeet model is nil - model not loaded!")
+                    throw TranscriptionError.contextInitializationFailed
+                }
+                print("✅ Parakeet model available for transcription")
+
+                print("🎵 Converting audio to PCM format...")
+                guard let samples = try await TranscriptionService.convertAudioToPCM(fileURL: url) else {
+                    print("❌ Audio conversion failed")
+                    throw TranscriptionError.audioConversionFailed
+                }
+                print("✅ Audio converted: \(samples.count) samples")
+
+                try Task.checkCancellation()
+
+                let audioArray = MLXArray(samples)
+
+                let shouldChunk = durationInSeconds > 180
+                let chunkDuration: Float? = shouldChunk ? 120.0 : nil
+                print("🔧 Audio duration: \(durationInSeconds)s, chunking: \(shouldChunk)")
+
+                let result: AlignedResult
+                if let chunkDuration {
+                    print("🔄 Transcribing with chunking (chunk: \(chunkDuration)s)...")
+                    result = try model.transcribe(
+                        audioData: audioArray,
+                        dtype: .float32,
+                        chunkDuration: chunkDuration,
+                        overlapDuration: 15.0,
+                        chunkCallback: { processed, total in
+                            Task { @MainActor in
+                                if serviceRef.isCancelled { return }
+                                let progressValue = total > 0 ? min(processed / total, 1.0) : 0.0
+                                serviceRef.progress = progressValue.isFinite ? progressValue : 0.0
+                            }
+                        }
+                    )
+                } else {
+                    print("🔄 Transcribing without chunking...")
+                    result = try model.transcribe(audioData: audioArray)
+                }
+                print("✅ Transcription completed")
+
+                try Task.checkCancellation()
+
+                let text: String
                 if settings.showTimestamps {
-                    let t0 = context.fullGetSegmentT0(iSegment: i)
-                    let t1 = context.fullGetSegmentT1(iSegment: i)
-                    text += String(format: "[%.1f->%.1f] ", Float(t0) / 100.0, Float(t1) / 100.0)
+                    let lines = result.sentences.map { sentence -> String in
+                        String(
+                            format: "[%.1f->%.1f] %@",
+                            sentence.start,
+                            sentence.end,
+                            sentence.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        )
+                    }
+                    text = lines.joined(separator: "\n")
+                } else {
+                    text = result.text
                 }
-                text += segmentText + "\n"
-            }
-            
-            let cleanedText = text
-                .replacingOccurrences(of: "[MUSIC]", with: "")
-                .replacingOccurrences(of: "[BLANK_AUDIO]", with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            
-            // Apply Asian autocorrect if enabled and language is Chinese, Japanese, or Korean
-            var processedText = cleanedText
-            if ["zh", "ja", "ko"].contains(settings.selectedLanguage) && settings.useAsianAutocorrect && !cleanedText.isEmpty {
-                processedText = AutocorrectWrapper.format(cleanedText)
-            }
-            
-            let finalText = processedText.isEmpty ? "No speech detected in the audio" : processedText
-            
-            await MainActor.run {
-                if !self.isCancelled {
-                    self.transcribedText = finalText
-                    self.progress = 1.0
+                print("📝 Transcribed text length: \(text.count) characters")
+
+                let cleanedText = text
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+
+                var processedText = cleanedText
+                if ["zh", "ja", "ko"].contains(settings.selectedLanguage),
+                   settings.useAsianAutocorrect,
+                   !cleanedText.isEmpty
+                {
+                    processedText = AutocorrectWrapper.format(cleanedText)
                 }
+
+                let finalText = processedText.isEmpty ? "No speech detected in the audio" : processedText
+                print("📤 Final text: \(finalText.prefix(100))...")
+
+                await MainActor.run {
+                    if !serviceRef.isCancelled {
+                        serviceRef.transcribedText = finalText
+                        serviceRef.progress = 1.0
+                        print("✅ Transcription result set in service")
+                    }
+                }
+
+                return finalText
             }
-            
-            return finalText
         }
         
-        // Store the task
         await MainActor.run {
             self.transcriptionTask = task
         }
@@ -289,10 +470,8 @@ class TranscriptionService: ObservableObject {
         do {
             return try await task.value
         } catch is CancellationError {
-            // Handle cancellation
             await MainActor.run {
                 self.isCancelled = true
-                // Make sure the abort flag is set to true
                 self.abortFlag?.pointee = true
             }
             throw TranscriptionError.processingFailed
@@ -320,17 +499,9 @@ class TranscriptionService: ObservableObject {
         return (cleanedText, latestTimestamp)
     }
     
-    // Make this method nonisolated to be callable from any context
-    nonisolated func createContext() -> MyWhisperContext? {
-        guard let modelPath = AppPreferences.shared.selectedModelPath else {
-            return nil
-        }
-        
-        let params = WhisperContextParams()
-        return MyWhisperContext.initFromFile(path: modelPath, params: params)
-    }
+    // Removed unused createContext() to avoid cross-actor access to AppPreferences
     
-    nonisolated func convertAudioToPCM(fileURL: URL) async throws -> [Float]? {
+    nonisolated static func convertAudioToPCM(fileURL: URL) async throws -> [Float]? {
         return try await Task.detached(priority: .userInitiated) {
             let audioFile = try AVAudioFile(forReading: fileURL)
             let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
