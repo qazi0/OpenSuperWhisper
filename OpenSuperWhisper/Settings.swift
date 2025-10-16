@@ -5,16 +5,17 @@ import Foundation
 import KeyboardShortcuts
 import SwiftUI
 
+@MainActor
 class SettingsViewModel: ObservableObject {
-    @Published var selectedModelURL: URL? {
+    @Published var selectedModel: LocalSpeechModel? {
         didSet {
-            if let url = selectedModelURL {
-                AppPreferences.shared.selectedModelPath = url.path
-            }
+            guard let model = selectedModel else { return }
+            AppPreferences.shared.selectedModelPath = model.path.path
+            AppPreferences.shared.selectedModelVendor = model.vendor
         }
     }
 
-    @Published var availableModels: [URL] = []
+    @Published var availableModels: [LocalSpeechModel] = []
     @Published var selectedLanguage: String {
         didSet {
             AppPreferences.shared.whisperLanguage = selectedLanguage
@@ -102,16 +103,34 @@ class SettingsViewModel: ObservableObject {
         self.playSoundOnRecordStart = prefs.playSoundOnRecordStart
         self.useAsianAutocorrect = prefs.useAsianAutocorrect
         
-        if let savedPath = prefs.selectedModelPath {
-            self.selectedModelURL = URL(fileURLWithPath: savedPath)
-        }
         loadAvailableModels()
     }
     
     func loadAvailableModels() {
-        availableModels = WhisperModelManager.shared.getAvailableModels()
-        if selectedModelURL == nil {
-            selectedModelURL = availableModels.first
+        let whisperModels = WhisperModelManager.shared
+            .getAvailableModels()
+            .map { url in
+                LocalSpeechModel(
+                    name: url.lastPathComponent,
+                    vendor: .whisper,
+                    path: url
+                )
+            }
+        
+        let parakeetModels = ParakeetModelManager.shared.availableModels()
+        
+        let combined = (whisperModels + parakeetModels).sorted { $0.name < $1.name }
+        availableModels = combined
+        
+        let prefs = AppPreferences.shared
+        if let savedPath = prefs.selectedModelPath,
+           let existing = combined.first(where: { $0.path.path == savedPath })
+        {
+            if selectedModel?.path != existing.path {
+                selectedModel = existing
+            }
+        } else if selectedModel == nil {
+            selectedModel = combined.first
         }
     }
 }
@@ -127,7 +146,8 @@ struct Settings {
     var useBeamSearch: Bool
     var beamSize: Int
     var useAsianAutocorrect: Bool
-    
+
+    @MainActor
     init() {
         let prefs = AppPreferences.shared
         self.selectedLanguage = prefs.whisperLanguage
@@ -148,7 +168,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) var dismiss
     @State private var isRecordingNewShortcut = false
     @State private var selectedTab = 0
-    @State private var previousModelURL: URL?
+    @State private var previousModel: LocalSpeechModel?
     
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -186,9 +206,9 @@ struct SettingsView: View {
         .toolbar {
             ToolbarItem(placement: .automatic) {
                 Button("Done") {
-                    if viewModel.selectedModelURL != previousModelURL {
+                    if viewModel.selectedModel?.path != previousModel?.path {
                         // Reload model if changed
-                        if let modelPath = viewModel.selectedModelURL?.path {
+                        if let modelPath = viewModel.selectedModel?.path.path {
                             TranscriptionService.shared.reloadModel(with: modelPath)
                         }
                     }
@@ -199,7 +219,7 @@ struct SettingsView: View {
             }
         }
         .onAppear {
-            previousModelURL = viewModel.selectedModelURL
+            previousModel = viewModel.selectedModel
         }
     }
     
@@ -211,10 +231,10 @@ struct SettingsView: View {
                         .font(.headline)
                         .foregroundColor(.primary)
                     
-                    Picker("Model", selection: $viewModel.selectedModelURL) {
-                        ForEach(viewModel.availableModels, id: \.self) { url in
-                            Text(url.lastPathComponent)
-                                .tag(url as URL?)
+                    Picker("Model", selection: $viewModel.selectedModel) {
+                        ForEach(viewModel.availableModels) { model in
+                            Text("\(model.name) (\(model.vendor.displayName))")
+                                .tag(model as LocalSpeechModel?)
                         }
                     }
                     .pickerStyle(.menu)
@@ -245,6 +265,28 @@ struct SettingsView: View {
                             .padding(8)
                             .background(Color(.textBackgroundColor).opacity(0.5))
                             .cornerRadius(6)
+                        
+                        HStack {
+                            Text("Parakeet Directory:")
+                                .font(.subheadline)
+                            Spacer()
+                            Button(action: {
+                                NSWorkspace.shared.open(ParakeetModelManager.shared.modelsDirectory)
+                            }) {
+                                Label("Open Folder", systemImage: "folder")
+                                    .font(.subheadline)
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Open Parakeet models directory")
+                        }
+                        
+                        Text(ParakeetModelManager.shared.modelsDirectory.path)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .textSelection(.enabled)
+                            .padding(8)
+                            .background(Color(.textBackgroundColor).opacity(0.5))
+                            .cornerRadius(6)
                     }
                     .padding(.top, 8)
                     
@@ -256,6 +298,9 @@ struct SettingsView: View {
                         
                         Link("Download models here", destination: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/tree/main")!)
                         .font(.caption)
+                        
+                        Link("Download Parakeet models", destination: URL(string: "https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3")!)
+                            .font(.caption)
                     }
                     .padding(.top, 8)
                 }
