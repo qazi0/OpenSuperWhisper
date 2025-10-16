@@ -8,6 +8,7 @@
 import Foundation
 import SwiftUI
 
+@MainActor
 class OnboardingViewModel: ObservableObject {
     @Published var selectedLanguage: String {
         didSet {
@@ -19,7 +20,8 @@ class OnboardingViewModel: ObservableObject {
     @Published var models: [DownloadableModel]
     @Published var isDownloadingAny: Bool = false
 
-    private let modelManager = WhisperModelManager.shared
+    private let whisperModelManager = WhisperModelManager.shared
+    private let parakeetModelManager = ParakeetModelManager.shared
 
     init() {
         let systemLanguage = LanguageUtil.getSystemLanguage()
@@ -27,8 +29,28 @@ class OnboardingViewModel: ObservableObject {
         self.selectedLanguage = systemLanguage
         self.models = []
         initializeModels()
-
-        if let defaultModel = models.first(where: { $0.name == "Turbo V3 large" }) {
+        
+        let preferences = AppPreferences.shared
+        if let savedPath = preferences.selectedModelPath {
+            if let existing = models.first(where: { model in
+                guard model.vendor == preferences.selectedModelVendor else { return false }
+                switch model.vendor {
+                case .whisper:
+                    guard let filename = model.url?.lastPathComponent else { return false }
+                    let localPath = WhisperModelManager.shared.modelsDirectory
+                        .appendingPathComponent(filename)
+                        .path
+                    return localPath == savedPath
+                case .parakeet:
+                    guard let repoID = model.repositoryID else { return false }
+                    return ParakeetModelManager.shared.modelDirectory(for: repoID).path == savedPath
+                }
+            }) {
+                self.selectedModel = existing
+            }
+        }
+        
+        if selectedModel == nil, let defaultModel = models.first(where: { $0.name == "Turbo V3 large" }) {
             self.selectedModel = defaultModel
         }
     }
@@ -37,7 +59,16 @@ class OnboardingViewModel: ObservableObject {
         // Initialize models with their actual download status
         models = availableModels.map { model in
             var updatedModel = model
-            updatedModel.isDownloaded = modelManager.isModelDownloaded(name: model.name)
+            switch model.vendor {
+            case .whisper:
+                if let filename = model.url?.lastPathComponent {
+                    updatedModel.isDownloaded = whisperModelManager.isModelDownloaded(name: filename)
+                }
+            case .parakeet:
+                if let repoID = model.repositoryID {
+                    updatedModel.isDownloaded = parakeetModelManager.isModelDownloaded(identifier: repoID)
+                }
+            }
             return updatedModel
         }
     }
@@ -56,21 +87,48 @@ class OnboardingViewModel: ObservableObject {
                 return
             }
 
-            // Start the download with progress updates
+            switch model.vendor {
+            case .whisper:
+                guard let downloadURL = model.url else {
+                    throw NSError(domain: "Onboarding", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid download URL"])
+                }
+                
+                let filename = downloadURL.lastPathComponent
+                
+                try await whisperModelManager.downloadModel(url: downloadURL, name: filename) { [weak self] progress in
+                    DispatchQueue.main.async {
+                        self?.models[modelIndex].downloadProgress = progress
+                        if progress >= 1.0 {
+                            self?.models[modelIndex].isDownloaded = true
+                            self?.isDownloadingAny = false
+                            // Update the model path after successful download
+                            if let modelPath = self?.whisperModelManager.modelsDirectory.appendingPathComponent(filename).path {
+                                AppPreferences.shared.selectedModelPath = modelPath
+                                AppPreferences.shared.selectedModelVendor = .whisper
+                                print("Model path after download: \(modelPath)")
+                            }
+                        }
+                    }
+                }
+            case .parakeet:
+                guard let repoID = model.repositoryID else {
+                    throw NSError(domain: "Onboarding", code: -2, userInfo: [NSLocalizedDescriptionKey: "Missing repository identifier"])
+                }
 
-            let filename = model.url.lastPathComponent
+                // Reference the shared manager directly to avoid crossing actor boundaries
+                let manager = ParakeetModelManager.shared
+                try await manager.downloadModel(repositoryID: repoID) { [weak self] progress in
+                    DispatchQueue.main.async {
+                        self?.models[modelIndex].downloadProgress = progress
 
-            try await modelManager.downloadModel(url: model.url, name: filename) { [weak self] progress in
+                        if progress >= 1.0 {
+                            self?.models[modelIndex].isDownloaded = true
+                            self?.isDownloadingAny = false
 
-                DispatchQueue.main.async {
-                    self?.models[modelIndex].downloadProgress = progress
-                    if progress >= 1.0 {
-                        self?.models[modelIndex].isDownloaded = true
-                        self?.isDownloadingAny = false
-                        // Update the model path after successful download
-                        if let modelPath = self?.modelManager.modelsDirectory.appendingPathComponent(filename).path {
-                            AppPreferences.shared.selectedModelPath = modelPath
-                            print("Model path after download: \(modelPath)")
+                            let directory = ParakeetModelManager.shared.modelDirectory(for: repoID)
+                            AppPreferences.shared.selectedModelPath = directory.path
+                            AppPreferences.shared.selectedModelVendor = .parakeet
+                            print("Parakeet model downloaded to: \(directory.path)")
                         }
                     }
                 }
@@ -151,6 +209,23 @@ struct OnboardingView: View {
         guard let selectedModel = viewModel.selectedModel else { return }
 
         if selectedModel.isDownloaded {
+            let whisperManager = WhisperModelManager.shared
+            let parakeetManager = ParakeetModelManager.shared
+            
+            switch selectedModel.vendor {
+            case .whisper:
+                if let filename = selectedModel.url?.lastPathComponent {
+                    let modelPath = whisperManager.modelsDirectory.appendingPathComponent(filename)
+                    AppPreferences.shared.selectedModelPath = modelPath.path
+                    AppPreferences.shared.selectedModelVendor = .whisper
+                }
+            case .parakeet:
+                if let repoID = selectedModel.repositoryID {
+                    let directory = parakeetManager.modelDirectory(for: repoID)
+                    AppPreferences.shared.selectedModelPath = directory.path
+                    AppPreferences.shared.selectedModelVendor = .parakeet
+                }
+            }
             // If model is already downloaded, proceed immediately
             appState.hasCompletedOnboarding = true
         } else {
@@ -177,7 +252,9 @@ struct DownloadableModel: Identifiable {
     let id = UUID() // Add an ID for Identifiable conformance
     let name: String
     var isDownloaded: Bool
-    let url: URL
+    let url: URL?
+    let repositoryID: String?
+    let vendor: SpeechModelVendor
     let size: Int
     var speedRate: Int
     var accuracyRate: Int
@@ -192,10 +269,21 @@ struct DownloadableModel: Identifiable {
         return formatter.string(fromByteCount: Int64(size) * 1000000) // Convert to MB as your size is in MB
     }
 
-    init(name: String, isDownloaded: Bool, url: URL, size: Int, speedRate: Int, accuracyRate: Int) {
+    init(
+        name: String,
+        isDownloaded: Bool,
+        url: URL? = nil,
+        repositoryID: String? = nil,
+        vendor: SpeechModelVendor,
+        size: Int,
+        speedRate: Int,
+        accuracyRate: Int
+    ) {
         self.name = name
         self.isDownloaded = isDownloaded
         self.url = url
+        self.repositoryID = repositoryID
+        self.vendor = vendor
         self.size = size
         self.speedRate = speedRate
         self.accuracyRate = accuracyRate
@@ -208,6 +296,8 @@ let availableModels = [
         name: "Turbo V3 large",
         isDownloaded: false,
         url: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin?download=true")!,
+        repositoryID: nil,
+        vendor: .whisper,
         size: 1624,
         speedRate: 60,
         accuracyRate: 100
@@ -216,6 +306,8 @@ let availableModels = [
         name: "Turbo V3 medium",
         isDownloaded: false,
         url: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q8_0.bin?download=true")!,
+        repositoryID: nil,
+        vendor: .whisper,
         size: 874,
         speedRate: 70,
         accuracyRate: 70
@@ -224,9 +316,21 @@ let availableModels = [
         name: "Turbo V3 small",
         isDownloaded: false,
         url: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin?download=true")!,
+        repositoryID: nil,
+        vendor: .whisper,
         size: 574,
         speedRate: 100,
         accuracyRate: 60
+    ),
+    DownloadableModel(
+        name: "Parakeet TDT 0.6B v3",
+        isDownloaded: false,
+        url: nil,
+        repositoryID: "mlx-community/parakeet-tdt-0.6b-v3",
+        vendor: .parakeet,
+        size: 2510,
+        speedRate: 70,
+        accuracyRate: 95
     )
 ]
 
@@ -242,6 +346,10 @@ struct DownloadableItemView: View {
                     HStack(spacing: 12) {
                         Text(model.name)
                             .font(.headline)
+                        
+                        Text("\(model.vendor.displayName) model")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
 
                         Spacer()
 
