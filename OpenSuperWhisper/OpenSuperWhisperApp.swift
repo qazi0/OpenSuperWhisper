@@ -41,6 +41,7 @@ struct OpenSuperWhisperApp: App {
     }
 }
 
+@MainActor
 class AppState: ObservableObject {
     @Published var hasCompletedOnboarding: Bool {
         didSet {
@@ -53,6 +54,7 @@ class AppState: ObservableObject {
     }
 }
 
+@MainActor
 class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private var statusItem: NSStatusItem?
     private var mainWindow: NSWindow?
