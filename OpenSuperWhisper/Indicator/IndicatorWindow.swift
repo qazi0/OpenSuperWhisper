@@ -48,9 +48,9 @@ class IndicatorViewModel: ObservableObject {
                 guard let self = self else { return }
 
                 do {
-                    print("🎙️ Starting transcription...")
+                    print("Starting transcription...")
                     let text = try await transcription.transcribeAudio(url: tempURL, settings: Settings())
-                    print("✅ Transcription completed successfully")
+                    print("Transcription completed successfully")
 
                     // Create a new Recording instance
                     let timestamp = Date()
@@ -78,13 +78,13 @@ class IndicatorViewModel: ObservableObject {
                     }
 
                     insertTextUsingPasteboard(text)
-                    print("📋 Transcription result: \(text)")
+                    print("Transcription result: \(text)")
                 } catch {
-                    print("❌ ERROR transcribing audio: \(error)")
-                    print("❌ Error type: \(type(of: error))")
-                    print("❌ Error details: \(error.localizedDescription)")
+                    print("ERROR transcribing audio: \(error)")
+                    print("Error type: \(type(of: error))")
+                    print("Error details: \(error.localizedDescription)")
                     if let transcriptionError = error as? TranscriptionError {
-                        print("❌ Transcription error case: \(transcriptionError)")
+                        print("Transcription error case: \(transcriptionError)")
                     }
                     try? FileManager.default.removeItem(at: tempURL)
                 }

@@ -57,12 +57,12 @@ class TranscriptionService: ObservableObject {
     private func loadModel() {
         print("Loading model")
         guard let modelPath = AppPreferences.shared.selectedModelPath else {
-            print("⚠️ No model path set in preferences")
+            print("No model path set in preferences")
             return
         }
         let vendor = AppPreferences.shared.selectedModelVendor
-        print("📦 Model path: \(modelPath)")
-        print("📦 Model vendor: \(vendor.displayName)")
+        print("Model path: \(modelPath)")
+        print("Model vendor: \(vendor.displayName)")
         isLoading = true
 
         // Capture cache directory on main actor to avoid cross-actor access later
@@ -80,10 +80,10 @@ class TranscriptionService: ObservableObject {
                     service.parakeetModel = nil
                     service.loadedModelVendor = .whisper
                     service.isLoading = false
-                    print("✅ Whisper model loaded successfully")
+                    print("Whisper model loaded successfully")
                 }
             case .parakeet:
-                print("🔄 Loading Parakeet model from: \(modelPath)")
+                print("Loading Parakeet model from: \(modelPath)")
                 do {
                     let model = try await loadParakeetModel(
                         from: modelPath,
@@ -98,7 +98,7 @@ class TranscriptionService: ObservableObject {
                         service.loadedModelVendor = .parakeet
                         service.isLoading = false
                         service.progress = 0.0
-                        print("✅ Parakeet model loaded successfully")
+                        print("Parakeet model loaded successfully")
                     }
                 } catch {
                     await MainActor.run {
@@ -106,8 +106,8 @@ class TranscriptionService: ObservableObject {
                         service.parakeetModel = nil
                         service.loadedModelVendor = nil
                         service.isLoading = false
-                        print("❌ Failed to load Parakeet model: \(error)")
-                        print("   Error details: \(error.localizedDescription)")
+                        print("Failed to load Parakeet model: \(error)")
+                        print("Error details: \(error.localizedDescription)")
                     }
                 }
             }
@@ -116,13 +116,13 @@ class TranscriptionService: ObservableObject {
     
     func reloadModel(with path: String) {
         print("Reloading model")
-        print("📦 New model path: \(path)")
+        print("New model path: \(path)")
         isLoading = true
 
         // Capture main-actor values before detaching
         let cacheDirectory = ParakeetModelManager.shared.modelsDirectory
         let vendor = AppPreferences.shared.selectedModelVendor
-        print("📦 Model vendor: \(vendor.displayName)")
+        print("Model vendor: \(vendor.displayName)")
 
         Task.detached(priority: .userInitiated) {
             switch vendor {
@@ -136,10 +136,10 @@ class TranscriptionService: ObservableObject {
                     service.parakeetModel = nil
                     service.loadedModelVendor = .whisper
                     service.isLoading = false
-                    print("✅ Whisper model reloaded successfully")
+                    print("Whisper model reloaded successfully")
                 }
             case .parakeet:
-                print("🔄 Reloading Parakeet model from: \(path)")
+                print("Reloading Parakeet model from: \(path)")
                 do {
                     let model = try await loadParakeetModel(
                         from: path,
@@ -154,7 +154,7 @@ class TranscriptionService: ObservableObject {
                         service.loadedModelVendor = .parakeet
                         service.isLoading = false
                         service.progress = 0.0
-                        print("✅ Parakeet model reloaded successfully")
+                        print("Parakeet model reloaded successfully")
                     }
                 } catch {
                     await MainActor.run {
@@ -162,8 +162,8 @@ class TranscriptionService: ObservableObject {
                         service.parakeetModel = nil
                         service.loadedModelVendor = nil
                         service.isLoading = false
-                        print("❌ Failed to reload Parakeet model: \(error)")
-                        print("   Error details: \(error.localizedDescription)")
+                        print("Failed to reload Parakeet model: \(error)")
+                        print("Error details: \(error.localizedDescription)")
                     }
                 }
             }
@@ -368,7 +368,7 @@ class TranscriptionService: ObservableObject {
             }
         case .parakeet:
             let modelForTask = parakeetModel
-            print("🎙️ Starting Parakeet transcription")
+            print("Starting Parakeet transcription")
 
             // Capture service reference before entering detached task
             let serviceRef = TranscriptionService.shared
@@ -377,17 +377,17 @@ class TranscriptionService: ObservableObject {
                 try Task.checkCancellation()
 
                 guard let model = modelForTask else {
-                    print("❌ Parakeet model is nil - model not loaded!")
+                    print("Parakeet model is nil - model not loaded!")
                     throw TranscriptionError.contextInitializationFailed
                 }
-                print("✅ Parakeet model available for transcription")
+                print("Parakeet model available for transcription")
 
-                print("🎵 Converting audio to PCM format...")
+                print("Converting audio to PCM format...")
                 guard let samples = try await TranscriptionService.convertAudioToPCM(fileURL: url) else {
-                    print("❌ Audio conversion failed")
+                    print("Audio conversion failed")
                     throw TranscriptionError.audioConversionFailed
                 }
-                print("✅ Audio converted: \(samples.count) samples")
+                print("Audio converted: \(samples.count) samples")
 
                 try Task.checkCancellation()
 
@@ -395,11 +395,11 @@ class TranscriptionService: ObservableObject {
 
                 let shouldChunk = durationInSeconds > 180
                 let chunkDuration: Float? = shouldChunk ? 120.0 : nil
-                print("🔧 Audio duration: \(durationInSeconds)s, chunking: \(shouldChunk)")
+                print("Audio duration: \(durationInSeconds)s, chunking: \(shouldChunk)")
 
                 let result: AlignedResult
                 if let chunkDuration {
-                    print("🔄 Transcribing with chunking (chunk: \(chunkDuration)s)...")
+                    print("Transcribing with chunking (chunk: \(chunkDuration)s)...")
                     result = try model.transcribe(
                         audioData: audioArray,
                         dtype: .float32,
@@ -414,10 +414,10 @@ class TranscriptionService: ObservableObject {
                         }
                     )
                 } else {
-                    print("🔄 Transcribing without chunking...")
+                    print("Transcribing without chunking...")
                     result = try model.transcribe(audioData: audioArray)
                 }
-                print("✅ Transcription completed")
+                print("Transcription completed")
 
                 try Task.checkCancellation()
 
@@ -435,7 +435,7 @@ class TranscriptionService: ObservableObject {
                 } else {
                     text = result.text
                 }
-                print("📝 Transcribed text length: \(text.count) characters")
+                print("Transcribed text length: \(text.count) characters")
 
                 let cleanedText = text
                     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -449,13 +449,13 @@ class TranscriptionService: ObservableObject {
                 }
 
                 let finalText = processedText.isEmpty ? "No speech detected in the audio" : processedText
-                print("📤 Final text: \(finalText.prefix(100))...")
+                print("Final text: \(finalText.prefix(100))...")
 
                 await MainActor.run {
                     if !serviceRef.isCancelled {
                         serviceRef.transcribedText = finalText
                         serviceRef.progress = 1.0
-                        print("✅ Transcription result set in service")
+                        print("Transcription result set in service")
                     }
                 }
 
