@@ -5,16 +5,19 @@ import Foundation
 import KeyboardShortcuts
 import SwiftUI
 
+@MainActor
 class SettingsViewModel: ObservableObject {
-    @Published var selectedModelURL: URL? {
+    @Published var selectedModel: LocalSpeechModel? {
         didSet {
-            if let url = selectedModelURL {
-                AppPreferences.shared.selectedModelPath = url.path
-            }
+            guard let model = selectedModel else { return }
+            AppPreferences.shared.selectedModelPath = model.path.path
+            AppPreferences.shared.selectedModelVendor = model.vendor
         }
     }
 
-    @Published var availableModels: [URL] = []
+    @Published var availableModels: [LocalSpeechModel] = []
+    @Published var downloadableModels: [DownloadableModel] = []
+    @Published var isDownloadingAny: Bool = false
     @Published var selectedLanguage: String {
         didSet {
             AppPreferences.shared.whisperLanguage = selectedLanguage
@@ -102,17 +105,104 @@ class SettingsViewModel: ObservableObject {
         self.playSoundOnRecordStart = prefs.playSoundOnRecordStart
         self.useAsianAutocorrect = prefs.useAsianAutocorrect
         
-        if let savedPath = prefs.selectedModelPath {
-            self.selectedModelURL = URL(fileURLWithPath: savedPath)
-        }
         loadAvailableModels()
+        initializeDownloadableModels()
     }
     
     func loadAvailableModels() {
-        availableModels = WhisperModelManager.shared.getAvailableModels()
-        if selectedModelURL == nil {
-            selectedModelURL = availableModels.first
+        let whisperModels = WhisperModelManager.shared
+            .getAvailableModels()
+            .map { url in
+                LocalSpeechModel(
+                    name: url.lastPathComponent,
+                    vendor: .whisper,
+                    path: url,
+                    repositoryID: nil
+                )
+            }
+        
+        let parakeetModels: [LocalSpeechModel] = ParakeetModelManager.shared.availableModels()
+            .map { modelName -> LocalSpeechModel in
+                let directory = ParakeetModelManager.shared.modelDirectory(for: modelName)
+                return LocalSpeechModel(
+                    name: modelName,
+                    vendor: .parakeet,
+                    path: directory,
+                    repositoryID: modelName
+                )
+            }
+
+        let combined = (whisperModels + parakeetModels).sorted { $0.name < $1.name }
+        availableModels = combined
+        
+        let prefs = AppPreferences.shared
+        if let savedPath = prefs.selectedModelPath,
+           let existing = combined.first(where: { $0.path.path == savedPath })
+        {
+            if selectedModel?.path != existing.path {
+                selectedModel = existing
+            }
+        } else if selectedModel == nil {
+            selectedModel = combined.first
         }
+    }
+
+    private func initializeDownloadableModels() {
+        let onboardingViewModel = OnboardingViewModel(applySystemLanguage: false)
+        onboardingViewModel.loadModels()
+        onboardingViewModel.selectModelFromPreferences()
+        downloadableModels = onboardingViewModel.models
+        synchronizeDownloadState()
+    }
+
+    func refreshDownloadableModels() {
+        initializeDownloadableModels()
+    }
+
+    private func synchronizeDownloadState() {
+        let prefs = AppPreferences.shared
+        guard let savedPath = prefs.selectedModelPath else { return }
+
+        for index in downloadableModels.indices {
+            let model = downloadableModels[index]
+
+            switch model.vendor {
+            case .whisper:
+                if let filename = model.url?.lastPathComponent {
+                    let path = WhisperModelManager.shared.modelsDirectory
+                        .appendingPathComponent(filename)
+                        .path
+                    if path == savedPath {
+                        downloadableModels[index].isDownloaded = true
+                    }
+                }
+            case .parakeet:
+                if let repoID = model.repositoryID {
+                    let path = ParakeetModelManager.shared.modelDirectory(for: repoID).path
+                    if path == savedPath {
+                        downloadableModels[index].isDownloaded = true
+                    }
+                }
+            }
+        }
+    }
+
+    func handleDownloadCompletion(for model: DownloadableModel) {
+        switch model.vendor {
+        case .whisper:
+            guard let filename = model.url?.lastPathComponent else { return }
+            let path = WhisperModelManager.shared.modelsDirectory.appendingPathComponent(filename)
+            let localModel = LocalSpeechModel(name: filename, vendor: .whisper, path: path, repositoryID: nil)
+            selectedModel = localModel
+        case .parakeet:
+            guard let repoID = model.repositoryID else { return }
+            let directory = ParakeetModelManager.shared.modelDirectory(for: repoID)
+            let localModel = LocalSpeechModel(name: repoID, vendor: .parakeet, path: directory, repositoryID: repoID)
+            selectedModel = localModel
+        }
+
+        loadAvailableModels()
+        initializeDownloadableModels()
     }
 }
 
@@ -127,7 +217,8 @@ struct Settings {
     var useBeamSearch: Bool
     var beamSize: Int
     var useAsianAutocorrect: Bool
-    
+
+    @MainActor
     init() {
         let prefs = AppPreferences.shared
         self.selectedLanguage = prefs.whisperLanguage
@@ -145,10 +236,13 @@ struct Settings {
 
 struct SettingsView: View {
     @StateObject private var viewModel = SettingsViewModel()
+    @StateObject private var modelSelectionViewModel = OnboardingViewModel(applySystemLanguage: false)
     @Environment(\.dismiss) var dismiss
     @State private var isRecordingNewShortcut = false
     @State private var selectedTab = 0
-    @State private var previousModelURL: URL?
+    @State private var previousModel: LocalSpeechModel?
+    @State private var showModelDownloadError = false
+    @State private var modelDownloadErrorMessage = ""
     
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -186,86 +280,230 @@ struct SettingsView: View {
         .toolbar {
             ToolbarItem(placement: .automatic) {
                 Button("Done") {
-                    if viewModel.selectedModelURL != previousModelURL {
-                        // Reload model if changed
-                        if let modelPath = viewModel.selectedModelURL?.path {
-                            TranscriptionService.shared.reloadModel(with: modelPath)
-                        }
-                    }
-                    dismiss()
+                    finalizeSelectionAndDismiss()
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.regular)
             }
         }
         .onAppear {
-            previousModelURL = viewModel.selectedModelURL
+            previousModel = viewModel.selectedModel
+            modelSelectionViewModel.loadModels()
+            modelSelectionViewModel.selectModelFromPreferences()
+        }
+        .alert("Download Error", isPresented: $showModelDownloadError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(modelDownloadErrorMessage)
         }
     }
     
+    private var canSetActiveModel: Bool {
+        guard let selected = modelSelectionViewModel.selectedModel else { return false }
+        guard selected.isDownloaded else { return false }
+
+        return selected.isDifferentFromPreference()
+    }
+
+    private func updatePreferenceSelection(using model: DownloadableModel) {
+        if model.isDownloaded {
+            modelSelectionViewModel.applySelectedModelPreferences()
+            viewModel.loadAvailableModels()
+            reloadTranscriptionModelIfNeeded(with: model)
+        }
+    }
+
+    private func onSetActiveModel() {
+        guard let model = modelSelectionViewModel.selectedModel, model.isDownloaded else { return }
+
+        updatePreferenceSelection(using: model)
+        modelSelectionViewModel.loadModels()
+        modelSelectionViewModel.selectModelFromPreferences()
+    }
+
+    private func finalizeSelectionAndDismiss() {
+        if let model = modelSelectionViewModel.selectedModel, model.isDownloaded {
+            reloadTranscriptionModelIfNeeded(with: model)
+        }
+        dismiss()
+    }
+
+    private func reloadTranscriptionModelIfNeeded(with model: DownloadableModel) {
+        switch model.vendor {
+        case .whisper:
+            guard let filename = model.url?.lastPathComponent else { return }
+            let path = WhisperModelManager.shared.modelsDirectory.appendingPathComponent(filename)
+            TranscriptionService.shared.reloadModel(with: path.path)
+        case .parakeet:
+            guard let repoID = model.repositoryID else { return }
+            let directory = ParakeetModelManager.shared.modelDirectory(for: repoID)
+            TranscriptionService.shared.reloadModel(with: directory.path)
+        }
+    }
+
     private var modelSettings: some View {
         Form {
             Section {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("Whisper Model")
-                        .font(.headline)
-                        .foregroundColor(.primary)
-                    
-                    Picker("Model", selection: $viewModel.selectedModelURL) {
-                        ForEach(viewModel.availableModels, id: \.self) { url in
-                            Text(url.lastPathComponent)
-                                .tag(url as URL?)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color(.controlBackgroundColor))
-                    .cornerRadius(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("Models Directory:")
-                                .font(.subheadline)
-                            Spacer()
-                            Button(action: {
-                                NSWorkspace.shared.open(WhisperModelManager.shared.modelsDirectory)
-                            }) {
-                                Label("Open Folder", systemImage: "folder")
-                                    .font(.subheadline)
-                            }
-                            .buttonStyle(.borderless)
-                            .help("Open models directory")
-                        }
-                        Text(WhisperModelManager.shared.modelsDirectory.path)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .textSelection(.enabled)
-                            .padding(8)
-                            .background(Color(.textBackgroundColor).opacity(0.5))
-                            .cornerRadius(6)
-                    }
-                    .padding(.top, 8)
-                    
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("To display other models in the list, you need to download a ggml bin file and place it in the models folder. Then restart the application.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        
-                        Link("Download models here", destination: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/tree/main")!)
-                        .font(.caption)
-                    }
-                    .padding(.top, 8)
-                }
-                .padding()
-                .background(Color(.controlBackgroundColor).opacity(0.3))
-                .cornerRadius(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                modelSettingsContent
             }
         }
         .padding()
+    }
+
+    private var modelSettingsContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Whisper Model")
+                .font(.headline)
+                .foregroundColor(.primary)
+
+            modelPickerView
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Manage Models")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+
+                ModelListView(viewModel: modelSelectionViewModel) { model in
+                    // Handle double-click activation
+                    if model.isDownloaded {
+                        updatePreferenceSelection(using: model)
+                        modelSelectionViewModel.loadModels()
+                        modelSelectionViewModel.selectModelFromPreferences()
+                    }
+                }
+                .frame(height: 300)
+
+                HStack(spacing: 12) {
+                    Button("Download Selected") {
+                        Task {
+                            do {
+                                try await modelSelectionViewModel.downloadSelectedModel()
+                                modelSelectionViewModel.applySelectedModelPreferences()
+                                viewModel.loadAvailableModels()
+                                modelSelectionViewModel.loadModels()
+                                modelSelectionViewModel.selectModelFromPreferences()
+                            } catch {
+                                await MainActor.run {
+                                    modelDownloadErrorMessage = error.localizedDescription
+                                    showModelDownloadError = true
+                                }
+                            }
+                        }
+                    }
+                    .disabled(modelSelectionViewModel.selectedModel == nil || modelSelectionViewModel.selectedModel?.isDownloaded == true || modelSelectionViewModel.isDownloadingAny)
+
+                    Button("Set Active Model") {
+                        onSetActiveModel()
+                    }
+                    .disabled(!canSetActiveModel)
+
+                    if modelSelectionViewModel.isDownloadingAny {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                }
+            }
+
+            directoriesView
+
+            downloadLinksView
+        }
+        .padding()
+        .background(Color(.controlBackgroundColor).opacity(0.3))
+        .cornerRadius(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var modelPickerView: some View {
+        Picker("Model", selection: $viewModel.selectedModel) {
+            ForEach(viewModel.availableModels) { model in
+                Text("\(model.name) (\(model.vendor.displayName))")
+                    .tag(model as LocalSpeechModel?)
+            }
+        }
+        .pickerStyle(.menu)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color(.controlBackgroundColor))
+        .cornerRadius(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var directoriesView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            whisperDirectoryView
+            parakeetDirectoryView
+        }
+        .padding(.top, 8)
+    }
+
+    private var whisperDirectoryView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Models Directory:")
+                    .font(.subheadline)
+                Spacer()
+                Button(action: {
+                    NSWorkspace.shared.open(WhisperModelManager.shared.modelsDirectory)
+                }) {
+                    Label("Open Folder", systemImage: "folder")
+                        .font(.subheadline)
+                }
+                .buttonStyle(.borderless)
+                .help("Open models directory")
+            }
+            Text(WhisperModelManager.shared.modelsDirectory.path)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .textSelection(.enabled)
+                .padding(8)
+                .background(Color(.textBackgroundColor).opacity(0.5))
+                .cornerRadius(6)
+        }
+    }
+
+    private var parakeetDirectoryView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Parakeet Directory:")
+                    .font(.subheadline)
+                Spacer()
+                Button(action: {
+                    NSWorkspace.shared.open(ParakeetModelManager.shared.modelsDirectory)
+                }) {
+                    Label("Open Folder", systemImage: "folder")
+                        .font(.subheadline)
+                }
+                .buttonStyle(.borderless)
+                .help("Open Parakeet models directory")
+            }
+
+            Text(ParakeetModelManager.shared.modelsDirectory.path)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .textSelection(.enabled)
+                .padding(8)
+                .background(Color(.textBackgroundColor).opacity(0.5))
+                .cornerRadius(6)
+        }
+    }
+
+    private var downloadLinksView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("To display other models in the list, you need to download a ggml bin file and place it in the models folder. Then restart the application.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Link("Download models here", destination: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/tree/main")!)
+                .font(.caption)
+
+            Link("Download Parakeet models", destination: URL(string: "https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3")!)
+                .font(.caption)
+        }
+        .padding(.top, 8)
     }
     
     private var transcriptionSettings: some View {

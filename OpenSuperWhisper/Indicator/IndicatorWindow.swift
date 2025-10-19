@@ -46,11 +46,12 @@ class IndicatorViewModel: ObservableObject {
             
             Task { [weak self] in
                 guard let self = self else { return }
-                
+
                 do {
-                    print("start decoding...")
+                    print("Starting transcription...")
                     let text = try await transcription.transcribeAudio(url: tempURL, settings: Settings())
-                    
+                    print("Transcription completed successfully")
+
                     // Create a new Recording instance
                     let timestamp = Date()
                     let fileName = "\(Int(timestamp.timeIntervalSince1970)).wav"
@@ -61,10 +62,10 @@ class IndicatorViewModel: ObservableObject {
                         transcription: text,
                         duration: 0 // TODO: Get actual duration
                     ).url
-                    
+
                     // Move the temporary recording to final location
-                    try recorder.moveTemporaryRecording(from: tempURL, to: finalURL)
-                    
+                    try await recorder.moveTemporaryRecording(from: tempURL, to: finalURL)
+
                     // Save the recording to store
                     await MainActor.run {
                         self.recordingStore.addRecording(Recording(
@@ -75,14 +76,19 @@ class IndicatorViewModel: ObservableObject {
                             duration: 0 // TODO: Get actual duration
                         ))
                     }
-                    
+
                     insertTextUsingPasteboard(text)
                     print("Transcription result: \(text)")
                 } catch {
-                    print("Error transcribing audio: \(error)")
+                    print("ERROR transcribing audio: \(error)")
+                    print("Error type: \(type(of: error))")
+                    print("Error details: \(error.localizedDescription)")
+                    if let transcriptionError = error as? TranscriptionError {
+                        print("Transcription error case: \(transcriptionError)")
+                    }
                     try? FileManager.default.removeItem(at: tempURL)
                 }
-                
+
                 await MainActor.run {
                     self.delegate?.didFinishDecoding()
                 }

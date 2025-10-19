@@ -3,7 +3,8 @@ import Foundation
 import SwiftUI
 import AppKit
 
-class AudioRecorder: NSObject, ObservableObject {
+@MainActor
+final class AudioRecorder: NSObject, ObservableObject {
     @Published var isRecording = false
     @Published var isPlaying = false
     @Published var currentlyPlayingURL: URL?
@@ -14,7 +15,6 @@ class AudioRecorder: NSObject, ObservableObject {
     private var notificationSound: NSSound?
     private let temporaryDirectory: URL
     private var currentRecordingURL: URL?
-    private var notificationObserver: Any?
 
     // MARK: - Singleton Instance
 
@@ -30,9 +30,7 @@ class AudioRecorder: NSObject, ObservableObject {
     }
     
     deinit {
-        if let observer = notificationObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
+        NotificationCenter.default.removeObserver(self)
     }
     
     private func setup() {
@@ -44,32 +42,27 @@ class AudioRecorder: NSObject, ObservableObject {
         )
         canRecord = !discoverySession.devices.isEmpty
         
-        // Add observer for device connection/disconnection
-        notificationObserver = NotificationCenter.default.addObserver(
-            forName: .AVCaptureDeviceWasConnected,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            let session = AVCaptureDevice.DiscoverySession(
-                deviceTypes: [.microphone, .external],
-                mediaType: .audio,
-                position: .unspecified
-            )
-            self?.canRecord = !session.devices.isEmpty
-        }
-        
-        NotificationCenter.default.addObserver(
-            forName: .AVCaptureDeviceWasDisconnected,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            let session = AVCaptureDevice.DiscoverySession(
-                deviceTypes: [.microphone, .external],
-                mediaType: .audio,
-                position: .unspecified
-            )
-            self?.canRecord = !session.devices.isEmpty
-        }
+        // Add observers for device connection/disconnection using selector-based API (avoids Sendable closure restrictions)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleDeviceConnected), name: .AVCaptureDeviceWasConnected, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleDeviceDisconnected), name: .AVCaptureDeviceWasDisconnected, object: nil)
+    }
+    
+    @objc private func handleDeviceConnected(_ notification: Notification) {
+        let session = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.microphone, .external],
+            mediaType: .audio,
+            position: .unspecified
+        )
+        self.canRecord = !session.devices.isEmpty
+    }
+    
+    @objc private func handleDeviceDisconnected(_ notification: Notification) {
+        let session = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.microphone, .external],
+            mediaType: .audio,
+            position: .unspecified
+        )
+        self.canRecord = !session.devices.isEmpty
     }
     
     private func createTemporaryDirectoryIfNeeded() {
@@ -215,16 +208,20 @@ class AudioRecorder: NSObject, ObservableObject {
 }
 
 extension AudioRecorder: AVAudioRecorderDelegate {
-    func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
-        if !flag {
-            currentRecordingURL = nil
+    nonisolated func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
+        Task { @MainActor in
+            if !flag {
+                self.currentRecordingURL = nil
+            }
         }
     }
 }
 
 extension AudioRecorder: AVAudioPlayerDelegate {
-    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        isPlaying = false
-        currentlyPlayingURL = nil
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor in
+            self.isPlaying = false
+            self.currentlyPlayingURL = nil
+        }
     }
 }

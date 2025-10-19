@@ -8,6 +8,7 @@
 import Foundation
 import SwiftUI
 
+@MainActor
 class OnboardingViewModel: ObservableObject {
     @Published var selectedLanguage: String {
         didSet {
@@ -19,26 +20,88 @@ class OnboardingViewModel: ObservableObject {
     @Published var models: [DownloadableModel]
     @Published var isDownloadingAny: Bool = false
 
-    private let modelManager = WhisperModelManager.shared
+    private let whisperModelManager = WhisperModelManager.shared
+    private let parakeetModelManager = ParakeetModelManager.shared
 
-    init() {
-        let systemLanguage = LanguageUtil.getSystemLanguage()
-        AppPreferences.shared.whisperLanguage = systemLanguage
-        self.selectedLanguage = systemLanguage
+    init(applySystemLanguage: Bool = true) {
         self.models = []
-        initializeModels()
+        let preferences = AppPreferences.shared
 
-        if let defaultModel = models.first(where: { $0.name == "Turbo V3 large" }) {
+        if applySystemLanguage {
+            let systemLanguage = LanguageUtil.getSystemLanguage()
+            preferences.whisperLanguage = systemLanguage
+            self.selectedLanguage = systemLanguage
+        } else {
+            self.selectedLanguage = preferences.whisperLanguage
+        }
+
+        loadModels()
+        selectModelFromPreferences()
+
+        if selectedModel == nil, let defaultModel = models.first(where: { $0.name == "Turbo V3 large" }) {
             self.selectedModel = defaultModel
         }
     }
 
-    private func initializeModels() {
-        // Initialize models with their actual download status
+    func setLanguage(_ newLanguage: String) {
+        selectedLanguage = newLanguage
+    }
+
+    func loadModels() {
         models = availableModels.map { model in
             var updatedModel = model
-            updatedModel.isDownloaded = modelManager.isModelDownloaded(name: model.name)
+            switch model.vendor {
+            case .whisper:
+                if let filename = model.url?.lastPathComponent {
+                    updatedModel.isDownloaded = whisperModelManager.isModelDownloaded(name: filename)
+                }
+            case .parakeet:
+                if let repoID = model.repositoryID {
+                    updatedModel.isDownloaded = parakeetModelManager.isModelDownloaded(identifier: repoID)
+                }
+            }
             return updatedModel
+        }
+    }
+
+    func selectModelFromPreferences() {
+        let preferences = AppPreferences.shared
+        guard let savedPath = preferences.selectedModelPath else { return }
+
+        if let existing = models.first(where: { model in
+            guard model.vendor == preferences.selectedModelVendor else { return false }
+            switch model.vendor {
+            case .whisper:
+                guard let filename = model.url?.lastPathComponent else { return false }
+                let localPath = WhisperModelManager.shared.modelsDirectory
+                    .appendingPathComponent(filename)
+                    .path
+                return localPath == savedPath
+            case .parakeet:
+                guard let repoID = model.repositoryID else { return false }
+                return ParakeetModelManager.shared.modelDirectory(for: repoID).path == savedPath
+            }
+        }) {
+            self.selectedModel = existing
+        }
+    }
+
+    func applySelectedModelPreferences() {
+        guard let selectedModel = selectedModel, selectedModel.isDownloaded else { return }
+
+        switch selectedModel.vendor {
+        case .whisper:
+            guard let filename = selectedModel.url?.lastPathComponent else { return }
+            let modelPath = whisperModelManager.modelsDirectory
+                .appendingPathComponent(filename)
+                .path
+            AppPreferences.shared.selectedModelPath = modelPath
+            AppPreferences.shared.selectedModelVendor = .whisper
+        case .parakeet:
+            guard let repoID = selectedModel.repositoryID else { return }
+            let directory = parakeetModelManager.modelDirectory(for: repoID)
+            AppPreferences.shared.selectedModelPath = directory.path
+            AppPreferences.shared.selectedModelVendor = .parakeet
         }
     }
 
@@ -56,21 +119,48 @@ class OnboardingViewModel: ObservableObject {
                 return
             }
 
-            // Start the download with progress updates
+            switch model.vendor {
+            case .whisper:
+                guard let downloadURL = model.url else {
+                    throw NSError(domain: "Onboarding", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid download URL"])
+                }
+                
+                let filename = downloadURL.lastPathComponent
+                
+                try await whisperModelManager.downloadModel(url: downloadURL, name: filename) { [weak self] progress in
+                    DispatchQueue.main.async {
+                        self?.models[modelIndex].downloadProgress = progress
+                        if progress >= 1.0 {
+                            self?.models[modelIndex].isDownloaded = true
+                            self?.isDownloadingAny = false
+                            // Update the model path after successful download
+                            if let modelPath = self?.whisperModelManager.modelsDirectory.appendingPathComponent(filename).path {
+                                AppPreferences.shared.selectedModelPath = modelPath
+                                AppPreferences.shared.selectedModelVendor = .whisper
+                                print("Model path after download: \(modelPath)")
+                            }
+                        }
+                    }
+                }
+            case .parakeet:
+                guard let repoID = model.repositoryID else {
+                    throw NSError(domain: "Onboarding", code: -2, userInfo: [NSLocalizedDescriptionKey: "Missing repository identifier"])
+                }
 
-            let filename = model.url.lastPathComponent
+                // Reference the shared manager directly to avoid crossing actor boundaries
+                let manager = ParakeetModelManager.shared
+                try await manager.downloadModel(repositoryID: repoID) { [weak self] progress in
+                    DispatchQueue.main.async {
+                        self?.models[modelIndex].downloadProgress = progress
 
-            try await modelManager.downloadModel(url: model.url, name: filename) { [weak self] progress in
+                        if progress >= 1.0 {
+                            self?.models[modelIndex].isDownloaded = true
+                            self?.isDownloadingAny = false
 
-                DispatchQueue.main.async {
-                    self?.models[modelIndex].downloadProgress = progress
-                    if progress >= 1.0 {
-                        self?.models[modelIndex].isDownloaded = true
-                        self?.isDownloadingAny = false
-                        // Update the model path after successful download
-                        if let modelPath = self?.modelManager.modelsDirectory.appendingPathComponent(filename).path {
-                            AppPreferences.shared.selectedModelPath = modelPath
-                            print("Model path after download: \(modelPath)")
+                            let directory = ParakeetModelManager.shared.modelDirectory(for: repoID)
+                            AppPreferences.shared.selectedModelPath = directory.path
+                            AppPreferences.shared.selectedModelVendor = .parakeet
+                            print("Parakeet model downloaded to: \(directory.path)")
                         }
                     }
                 }
@@ -151,6 +241,7 @@ struct OnboardingView: View {
         guard let selectedModel = viewModel.selectedModel else { return }
 
         if selectedModel.isDownloaded {
+            viewModel.applySelectedModelPreferences()
             // If model is already downloaded, proceed immediately
             appState.hasCompletedOnboarding = true
         } else {
@@ -173,11 +264,13 @@ struct OnboardingView: View {
     }
 }
 
-struct DownloadableModel: Identifiable {
+struct DownloadableModel: Identifiable, Equatable {
     let id = UUID() // Add an ID for Identifiable conformance
     let name: String
     var isDownloaded: Bool
-    let url: URL
+    let url: URL?
+    let repositoryID: String?
+    let vendor: SpeechModelVendor
     let size: Int
     var speedRate: Int
     var accuracyRate: Int
@@ -192,13 +285,47 @@ struct DownloadableModel: Identifiable {
         return formatter.string(fromByteCount: Int64(size) * 1000000) // Convert to MB as your size is in MB
     }
 
-    init(name: String, isDownloaded: Bool, url: URL, size: Int, speedRate: Int, accuracyRate: Int) {
+    init(
+        name: String,
+        isDownloaded: Bool,
+        url: URL? = nil,
+        repositoryID: String? = nil,
+        vendor: SpeechModelVendor,
+        size: Int,
+        speedRate: Int,
+        accuracyRate: Int
+    ) {
         self.name = name
         self.isDownloaded = isDownloaded
         self.url = url
+        self.repositoryID = repositoryID
+        self.vendor = vendor
         self.size = size
         self.speedRate = speedRate
         self.accuracyRate = accuracyRate
+    }
+    static func == (lhs: DownloadableModel, rhs: DownloadableModel) -> Bool {
+        lhs.id == rhs.id
+    }
+    
+    @MainActor
+    func isDifferentFromPreference() -> Bool {
+        let prefs = AppPreferences.shared
+        guard let savedPath = prefs.selectedModelPath else { return true }
+        guard prefs.selectedModelVendor == vendor else { return true }
+        
+        switch vendor {
+        case .whisper:
+            guard let filename = url?.lastPathComponent else { return true }
+            let localPath = WhisperModelManager.shared.modelsDirectory
+                .appendingPathComponent(filename)
+                .path
+            return localPath != savedPath
+        case .parakeet:
+            guard let repoID = repositoryID else { return true }
+            let localPath = ParakeetModelManager.shared.modelDirectory(for: repoID).path
+            return localPath != savedPath
+        }
     }
 }
 
@@ -208,6 +335,8 @@ let availableModels = [
         name: "Turbo V3 large",
         isDownloaded: false,
         url: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin?download=true")!,
+        repositoryID: nil,
+        vendor: .whisper,
         size: 1624,
         speedRate: 60,
         accuracyRate: 100
@@ -216,6 +345,8 @@ let availableModels = [
         name: "Turbo V3 medium",
         isDownloaded: false,
         url: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q8_0.bin?download=true")!,
+        repositoryID: nil,
+        vendor: .whisper,
         size: 874,
         speedRate: 70,
         accuracyRate: 70
@@ -224,9 +355,31 @@ let availableModels = [
         name: "Turbo V3 small",
         isDownloaded: false,
         url: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin?download=true")!,
+        repositoryID: nil,
+        vendor: .whisper,
         size: 574,
         speedRate: 100,
         accuracyRate: 60
+    ),
+    DownloadableModel(
+        name: "Parakeet-TDT-0.6B-v2 (EN)",
+        isDownloaded: false,
+        url: nil,
+        repositoryID: "mlx-community/parakeet-tdt-0.6b-v2",
+        vendor: .parakeet,
+        size: 2510,
+        speedRate: 90,
+        accuracyRate: 80
+    ),
+    DownloadableModel(
+        name: "Parakeet-TDT-0.6B-v3",
+        isDownloaded: false,
+        url: nil,
+        repositoryID: "mlx-community/parakeet-tdt-0.6b-v3",
+        vendor: .parakeet,
+        size: 2510,
+        speedRate:90,
+        accuracyRate: 95
     )
 ]
 
@@ -234,6 +387,7 @@ let availableModels = [
 struct DownloadableItemView: View {
     @Binding var model: DownloadableModel
     @EnvironmentObject var viewModel: OnboardingViewModel
+    var onDoubleClick: ((DownloadableModel) -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -242,6 +396,12 @@ struct DownloadableItemView: View {
                     HStack(spacing: 12) {
                         Text(model.name)
                             .font(.headline)
+                            .lineLimit(3)
+                            .fixedSize(horizontal: false, vertical: true)
+                        
+                        Text("\(model.vendor.displayName) model")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
 
                         Spacer()
 
@@ -297,7 +457,15 @@ struct DownloadableItemView: View {
         .background(model.name == viewModel.selectedModel?.name ? Color.gray.opacity(0.3) : Color.clear)
         .cornerRadius(16)
         .contentShape(Rectangle())
+        .onTapGesture(count: 2) {
+            // Double-click to activate model
+            if model.isDownloaded {
+                viewModel.selectedModel = model
+                onDoubleClick?(model)
+            }
+        }
         .onTapGesture {
+            // Single-click to select model
             viewModel.selectedModel = model
         }
     }
@@ -305,15 +473,17 @@ struct DownloadableItemView: View {
 
 struct ModelListView: View {
     @ObservedObject var viewModel: OnboardingViewModel
+    var onDoubleClick: ((DownloadableModel) -> Void)?
 
     var body: some View {
-        VStack {
-            ForEach($viewModel.models) { $model in
-                DownloadableItemView(model: $model)
-                    .environmentObject(viewModel)
+        ScrollView {
+            VStack {
+                ForEach($viewModel.models) { $model in
+                    DownloadableItemView(model: $model, onDoubleClick: onDoubleClick)
+                        .environmentObject(viewModel)
+                }
             }
         }
-        .listStyle(.bordered)
     }
 }
 

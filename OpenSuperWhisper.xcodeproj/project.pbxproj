@@ -32,6 +32,7 @@
 		CE84DF762D5577D200C54EA6 /* Accelerate.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CE84DF752D5577D200C54EA6 /* Accelerate.framework */; };
 		CE84E17D2D56550B00C54EA6 /* KeyboardShortcuts in Frameworks */ = {isa = PBXBuildFile; productRef = CE84E17C2D56550B00C54EA6 /* KeyboardShortcuts */; };
 		CEAC00032D82F00200000000 /* libautocorrect_swift.dylib in Frameworks */ = {isa = PBXBuildFile; fileRef = CEAC00012D82F00000000000 /* libautocorrect_swift.dylib */; };
+		CEB0DAA22D90F11000A1B2C3 /* ParakeetMLX in Frameworks */ = {isa = PBXBuildFile; productRef = CEB0DAA12D90F11000A1B2C3 /* ParakeetMLX */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -189,6 +190,7 @@
 				CE84DF6E2D55777800C54EA6 /* libc++.tbd in Frameworks */,
 				840156D12D79EDA900FB5FFE /* libggml.a in Frameworks */,
 				CE84E17D2D56550B00C54EA6 /* KeyboardShortcuts in Frameworks */,
+				CEB0DAA22D90F11000A1B2C3 /* ParakeetMLX in Frameworks */,
 				CEAC00032D82F00200000000 /* libautocorrect_swift.dylib in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -387,6 +389,7 @@
 			packageProductDependencies = (
 				CE84E17C2D56550B00C54EA6 /* KeyboardShortcuts */,
 				CE0EAD6D2D56ACA80067FDEE /* GRDB */,
+				CEB0DAA12D90F11000A1B2C3 /* ParakeetMLX */,
 			);
 			productName = OpenSuperWhisper;
 			productReference = CE57B0282D52C7BB00929AF3 /* OpenSuperWhisper.app */;
@@ -473,6 +476,7 @@
 			packageReferences = (
 				CE84E17B2D56550B00C54EA6 /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */,
 				CE0EAD6C2D56ACA80067FDEE /* XCRemoteSwiftPackageReference "GRDB.swift" */,
+				CEB0DAA02D90F11000A1B2C3 /* XCRemoteSwiftPackageReference "swift-parakeet-mlx" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = CE57B0292D52C7BB00929AF3 /* Products */;
@@ -785,7 +789,7 @@
 				"PROVISIONING_PROFILE_SPECIFIER[sdk=macosx*]" = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = "$(PROJECT_DIR)/Bridge.h";
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.1;
 			};
 			name = Debug;
 		};
@@ -843,7 +847,7 @@
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = "$(PROJECT_DIR)/Bridge.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.1;
 			};
 			name = Release;
 		};
@@ -861,7 +865,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = ru.starmel.OpenSuperWhisperTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.1;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/OpenSuperWhisper.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/OpenSuperWhisper";
 			};
 			name = Debug;
@@ -880,7 +884,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = ru.starmel.OpenSuperWhisperTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.1;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/OpenSuperWhisper.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/OpenSuperWhisper";
 			};
 			name = Release;
@@ -897,7 +901,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = ru.starmel.OpenSuperWhisperUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.1;
 				TEST_TARGET_NAME = OpenSuperWhisper;
 			};
 			name = Debug;
@@ -914,7 +918,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = ru.starmel.OpenSuperWhisperUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.1;
 				TEST_TARGET_NAME = OpenSuperWhisper;
 			};
 			name = Release;
@@ -977,6 +981,14 @@
 				minimumVersion = 2.3.0;
 			};
 		};
+		CEB0DAA02D90F11000A1B2C3 /* XCRemoteSwiftPackageReference "swift-parakeet-mlx" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/FluidInference/swift-parakeet-mlx.git";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -989,6 +1001,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = CE84E17B2D56550B00C54EA6 /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */;
 			productName = KeyboardShortcuts;
+		};
+		CEB0DAA12D90F11000A1B2C3 /* ParakeetMLX */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = CEB0DAA02D90F11000A1B2C3 /* XCRemoteSwiftPackageReference "swift-parakeet-mlx" */;
+			productName = ParakeetMLX;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

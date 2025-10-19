@@ -1,12 +1,12 @@
 import Combine
 import Foundation
 
-class WhisperDownloadDelegate: NSObject, URLSessionTaskDelegate, URLSessionDownloadDelegate {
-    private let progressCallback: (Double) -> Void
+final class WhisperDownloadDelegate: NSObject, URLSessionTaskDelegate, URLSessionDownloadDelegate {
+    private let progressCallback: @Sendable (Double) -> Void
     private var expectedContentLength: Int64 = 0
-    var completionHandler: ((URL?, Error?) -> Void)?
+    var completionHandler: (@Sendable (URL?, Error?) -> Void)?
     
-    init(progressCallback: @escaping (Double) -> Void) {
+    init(progressCallback: @escaping @Sendable (Double) -> Void) {
         self.progressCallback = progressCallback
         super.init()
     }
@@ -22,10 +22,7 @@ class WhisperDownloadDelegate: NSObject, URLSessionTaskDelegate, URLSessionDownl
         }
         let progress = Double(totalBytesWritten) / Double(expectedContentLength)
         
-        DispatchQueue.main.async { [weak self] in
-            self?.progressCallback(progress)
-        }
-
+        progressCallback(progress)
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didResumeAtOffset fileOffset: Int64, expectedTotalBytes: Int64) {
@@ -39,7 +36,11 @@ class WhisperDownloadDelegate: NSObject, URLSessionTaskDelegate, URLSessionDownl
     }
 }
 
-class WhisperModelManager {
+// The delegate is used with a main-queue URLSession; mark as unchecked Sendable to satisfy Swift 6.
+extension WhisperDownloadDelegate: @unchecked Sendable {}
+
+@MainActor
+final class WhisperModelManager {
     static let shared = WhisperModelManager()
     
     private let modelsDirectoryName = "whisper-models"
@@ -104,15 +105,13 @@ class WhisperModelManager {
     }
     
     // Download model with progress callback using delegate
-    func downloadModel(url: URL, name: String, progressCallback: @escaping (Double) -> Void) async throws {
+    func downloadModel(url: URL, name: String, progressCallback: @escaping @Sendable (Double) -> Void) async throws {
         let destinationURL = modelsDirectory.appendingPathComponent(name)
         
         // Check if model already exists
         if FileManager.default.fileExists(atPath: destinationURL.path) {
             print("Model already exists at: \(destinationURL.path)")
-            DispatchQueue.main.async {
-                progressCallback(1.0)
-            }
+            progressCallback(1.0)
             return
         }
         
@@ -151,9 +150,7 @@ class WhisperModelManager {
                     try FileManager.default.moveItem(at: location, to: destinationURL)
                     print("Model successfully saved to: \(destinationURL.path)")
                     
-                    DispatchQueue.main.async {
-                        progressCallback(1.0)
-                    }
+                    progressCallback(1.0)
                     
                     continuation.resume(returning: ())
                 } catch {
