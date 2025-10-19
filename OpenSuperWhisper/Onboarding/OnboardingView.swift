@@ -323,13 +323,23 @@ let availableModels = [
         accuracyRate: 60
     ),
     DownloadableModel(
-        name: "Parakeet TDT 0.6B v3",
+        name: "Parakeet-TDT-0.6B-v2 (EN)",
+        isDownloaded: false,
+        url: nil,
+        repositoryID: "mlx-community/parakeet-tdt-0.6b-v2",
+        vendor: .parakeet,
+        size: 2510,
+        speedRate: 90,
+        accuracyRate: 80
+    ),
+    DownloadableModel(
+        name: "Parakeet-TDT-0.6B-v3",
         isDownloaded: false,
         url: nil,
         repositoryID: "mlx-community/parakeet-tdt-0.6b-v3",
         vendor: .parakeet,
         size: 2510,
-        speedRate: 70,
+        speedRate:90,
         accuracyRate: 95
     )
 ]
@@ -346,6 +356,8 @@ struct DownloadableItemView: View {
                     HStack(spacing: 12) {
                         Text(model.name)
                             .font(.headline)
+                            .lineLimit(3)
+                            .fixedSize(horizontal: false, vertical: true)
                         
                         Text("\(model.vendor.displayName) model")
                             .font(.caption)
@@ -415,13 +427,14 @@ struct ModelListView: View {
     @ObservedObject var viewModel: OnboardingViewModel
 
     var body: some View {
-        VStack {
-            ForEach($viewModel.models) { $model in
-                DownloadableItemView(model: $model)
-                    .environmentObject(viewModel)
+        ScrollView {
+            VStack {
+                ForEach($viewModel.models) { $model in
+                    DownloadableItemView(model: $model)
+                        .environmentObject(viewModel)
+                }
             }
         }
-        .listStyle(.bordered)
     }
 }
 
