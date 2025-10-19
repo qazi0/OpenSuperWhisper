@@ -1,6 +1,8 @@
 # OpenSuperWhisper
 
-OpenSuperWhisper is a macOS application that provides real-time audio transcription using the Whisper model. It offers a seamless way to record and transcribe audio with customizable settings and keyboard shortcuts.
+**New in this Fork: Support for NVIDIA Parakeet models**
+
+OpenSuperWhisper is a macOS application that provides real-time audio transcription using Whisper and Parakeet MLX models. It offers a seamless way to record and transcribe audio with customizable settings and keyboard shortcuts.
 
 <p align="center">
 <img src="docs/image.png" width="400" /> <img src="docs/image_indicator.png" width="400" />
@@ -70,6 +72,16 @@ Contributions are welcome! Please feel free to submit pull requests or create is
 
 OpenSuperWhisper is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
-## Whisper Models
+## Models
+
+### Whisper Models
 
 You can download Whisper model files (`.bin`) from the [Whisper.cpp Hugging Face repository](https://huggingface.co/ggerganov/whisper.cpp/tree/main). Place the downloaded `.bin` files in the app's models directory. On first launch, the app will attempt to copy a default model automatically, but you can add more models manually.
+
+### Parakeet MLX Models
+
+OpenSuperWhisper also supports Parakeet models optimized for Apple Silicon using MLX. The app includes built-in support for downloading Parakeet models directly from the interface, including:
+- Parakeet-TDT-0.6B-v2 (English-focused)
+- Parakeet-TDT-0.6B-v3 (Multilingual support)
+
+You can also manually download Parakeet models from [Hugging Face MLX Community](https://huggingface.co/mlx-community) repositories.
