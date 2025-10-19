@@ -19,6 +19,7 @@ struct LocalSpeechModel: Identifiable, Equatable, Hashable {
     let name: String
     let vendor: SpeechModelVendor
     let path: URL
+    let repositoryID: String?
 
     static func == (lhs: LocalSpeechModel, rhs: LocalSpeechModel) -> Bool {
         return lhs.path == rhs.path
