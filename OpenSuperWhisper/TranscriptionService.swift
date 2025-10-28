@@ -99,6 +99,9 @@ class TranscriptionService: ObservableObject {
                         service.isLoading = false
                         service.progress = 0.0
                         print("Parakeet model loaded successfully")
+                        print("Model config: sample_rate=\(model.preprocessConfig.sampleRate), features=\(model.preprocessConfig.features), normalize=\(model.preprocessConfig.normalize)")
+                        print("Model vocabulary size: \(model.vocabulary.count)")
+                        print("Model durations: \(model.durations.count) values")
                     }
                 } catch {
                     await MainActor.run {
@@ -397,6 +400,15 @@ class TranscriptionService: ObservableObject {
                 let chunkDuration: Float? = shouldChunk ? 120.0 : nil
                 print("Audio duration: \(durationInSeconds)s, chunking: \(shouldChunk)")
 
+                // Create decoding configuration with Parakeet-specific settings
+                let decodingConfig = DecodingConfig(
+                    decoding: "greedy",
+                    maxNewSymbolsPerStep: 500,  // Increased from 100 to reduce premature cutoffs
+                    temperature: 0.0,  // Always 0.0 for greedy decoding (Parakeet default)
+                    languageHint: settings.selectedLanguage != "auto" ? settings.selectedLanguage : nil
+                )
+                print("Parakeet decoding config: temperature=\(decodingConfig.temperature), maxSymbols=\(decodingConfig.maxNewSymbolsPerStep)")
+
                 let result: AlignedResult
                 if let chunkDuration {
                     print("Transcribing with chunking (chunk: \(chunkDuration)s)...")
@@ -411,11 +423,15 @@ class TranscriptionService: ObservableObject {
                                 let progressValue = total > 0 ? min(processed / total, 1.0) : 0.0
                                 serviceRef.progress = progressValue.isFinite ? progressValue : 0.0
                             }
-                        }
+                        },
+                        decodingConfig: decodingConfig
                     )
                 } else {
                     print("Transcribing without chunking...")
-                    result = try model.transcribe(audioData: audioArray)
+                    result = try model.transcribe(
+                        audioData: audioArray,
+                        decodingConfig: decodingConfig
+                    )
                 }
                 print("Transcription completed")
 

@@ -65,8 +65,17 @@ class ParakeetModelManager {
         let fileManager = FileManager.default
         var models: [String] = []
 
+        let repositoryURL = modelsDirectory.appendingPathComponent("mlx-community")
+
+        // Check if mlx-community directory exists before trying to enumerate it
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: repositoryURL.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            // Directory doesn't exist yet (first launch) - return empty array
+            return []
+        }
+
         do {
-            let repositoryURL = modelsDirectory.appendingPathComponent("mlx-community")
             let modelURLs = try fileManager.contentsOfDirectory(at: repositoryURL,
                                                                includingPropertiesForKeys: [.isDirectoryKey],
                                                                options: [.skipsHiddenFiles])
@@ -82,7 +91,8 @@ class ParakeetModelManager {
                     }
 
                     if hasAllFiles {
-                        models.append(url.lastPathComponent)
+                        // Return full repository ID format: "mlx-community/model-name"
+                        models.append("mlx-community/\(url.lastPathComponent)")
                     }
                 }
             }
@@ -94,9 +104,9 @@ class ParakeetModelManager {
     }
 
     func modelDirectory(for repositoryID: String) -> URL {
-        return modelsDirectory
-            .appendingPathComponent("mlx-community")
-            .appendingPathComponent(repositoryID)
+        // repositoryID already contains "mlx-community/model-name" format
+        // Don't double-nest the mlx-community directory
+        return modelsDirectory.appendingPathComponent(repositoryID)
     }
 
     func isModelDownloaded(identifier: String) -> Bool {
