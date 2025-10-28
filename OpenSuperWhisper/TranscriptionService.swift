@@ -397,6 +397,14 @@ class TranscriptionService: ObservableObject {
                 let chunkDuration: Float? = shouldChunk ? 120.0 : nil
                 print("Audio duration: \(durationInSeconds)s, chunking: \(shouldChunk)")
 
+                // Create decoding configuration with settings from user preferences
+                let decodingConfig = DecodingConfig(
+                    decoding: "greedy",
+                    maxNewSymbolsPerStep: 500,  // Increased from 100 to reduce premature cutoffs
+                    temperature: Float(settings.temperature),
+                    languageHint: settings.selectedLanguage != "auto" ? settings.selectedLanguage : nil
+                )
+
                 let result: AlignedResult
                 if let chunkDuration {
                     print("Transcribing with chunking (chunk: \(chunkDuration)s)...")
@@ -411,11 +419,15 @@ class TranscriptionService: ObservableObject {
                                 let progressValue = total > 0 ? min(processed / total, 1.0) : 0.0
                                 serviceRef.progress = progressValue.isFinite ? progressValue : 0.0
                             }
-                        }
+                        },
+                        decodingConfig: decodingConfig
                     )
                 } else {
                     print("Transcribing without chunking...")
-                    result = try model.transcribe(audioData: audioArray)
+                    result = try model.transcribe(
+                        audioData: audioArray,
+                        decodingConfig: decodingConfig
+                    )
                 }
                 print("Transcription completed")
 
