@@ -402,7 +402,7 @@ class TranscriptionService: ObservableObject {
                 // Create decoding configuration with Parakeet-specific settings
                 let decodingConfig = DecodingConfig(
                     decoding: "greedy",
-                    maxNewSymbolsPerStep: 400,
+                    maxNewSymbolsPerStep: 500,
                     temperature: 0.0,
                     languageHint: settings.selectedLanguage != "auto" ? settings.selectedLanguage : nil
                 )
