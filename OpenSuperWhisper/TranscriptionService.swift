@@ -5,9 +5,6 @@ import MLX
 
 @preconcurrency import ObjectiveC
 
-// Make UnsafeMutablePointer<Bool> Sendable for use in Task.detached
-extension UnsafeMutablePointer: @unchecked @retroactive Sendable where Pointee == Bool {}
-
 @MainActor
 @preconcurrency
 class TranscriptionService: ObservableObject {
@@ -49,11 +46,6 @@ class TranscriptionService: ObservableObject {
         isCancelled = false
     }
     
-    deinit {
-        // Free the abort flag if it exists
-        abortFlag?.deallocate()
-    }
-    
     private func loadModel() {
         print("Loading model")
         guard let modelPath = AppPreferences.shared.selectedModelPath else {
@@ -68,7 +60,7 @@ class TranscriptionService: ObservableObject {
         // Capture cache directory on main actor to avoid cross-actor access later
         let cacheDirectory = ParakeetModelManager.shared.modelsDirectory
 
-        Task.detached(priority: .userInitiated) {
+        Task(priority: .userInitiated) {
             switch vendor {
             case .whisper:
                 let params = WhisperContextParams()
@@ -87,9 +79,13 @@ class TranscriptionService: ObservableObject {
                 do {
                     let model = try await loadParakeetModel(
                         from: modelPath,
-                        dtype: .float32,
+                        dtype: .float16,
                         cacheDirectory: cacheDirectory
                     )
+
+                    // Ensure the model runs in evaluation mode for stable BatchNorm behavior
+                    // and to avoid any training-mode randomness.
+                    model.train(false)
 
                     await MainActor.run {
                         let service = TranscriptionService.shared
@@ -127,7 +123,7 @@ class TranscriptionService: ObservableObject {
         let vendor = AppPreferences.shared.selectedModelVendor
         print("Model vendor: \(vendor.displayName)")
 
-        Task.detached(priority: .userInitiated) {
+        Task(priority: .userInitiated) {
             switch vendor {
             case .whisper:
                 let params = WhisperContextParams()
@@ -146,9 +142,12 @@ class TranscriptionService: ObservableObject {
                 do {
                     let model = try await loadParakeetModel(
                         from: path,
-                        dtype: .float32,
+                        dtype: .float16,
                         cacheDirectory: cacheDirectory
                     )
+
+                    // Switch to eval mode to use running stats in BatchNorm, etc.
+                    model.train(false)
 
                     await MainActor.run {
                         let service = TranscriptionService.shared
@@ -230,7 +229,7 @@ class TranscriptionService: ObservableObject {
             let contextPtr = contextForTask
             let abortPtr = abortFlagForTask
 
-            task = Task.detached(priority: .userInitiated) {
+            task = Task(priority: .userInitiated) {
                 try Task.checkCancellation()
 
                 guard let context = contextPtr else {
@@ -403,35 +402,89 @@ class TranscriptionService: ObservableObject {
                 // Create decoding configuration with Parakeet-specific settings
                 let decodingConfig = DecodingConfig(
                     decoding: "greedy",
-                    maxNewSymbolsPerStep: 500,  // Increased from 100 to reduce premature cutoffs
-                    temperature: 0.0,  // Always 0.0 for greedy decoding (Parakeet default)
+                    maxNewSymbolsPerStep: 400,
+                    temperature: 0.0,
                     languageHint: settings.selectedLanguage != "auto" ? settings.selectedLanguage : nil
                 )
                 print("Parakeet decoding config: temperature=\(decodingConfig.temperature), maxSymbols=\(decodingConfig.maxNewSymbolsPerStep)")
 
                 let result: AlignedResult
                 if let chunkDuration {
-                    print("Transcribing with chunking (chunk: \(chunkDuration)s)...")
-                    result = try model.transcribe(
-                        audioData: audioArray,
-                        dtype: .float32,
-                        chunkDuration: chunkDuration,
-                        overlapDuration: 15.0,
-                        chunkCallback: { processed, total in
-                            Task { @MainActor in
-                                if serviceRef.isCancelled { return }
-                                let progressValue = total > 0 ? min(processed / total, 1.0) : 0.0
-                                serviceRef.progress = progressValue.isFinite ? progressValue : 0.0
+                    print("Transcribing with manual chunking (chunk: \(chunkDuration)s)...")
+                    let sr = Float(model.preprocessConfig.sampleRate)
+                    let chunkSamples = Int(chunkDuration * sr)
+                    let overlapSamples = Int(15.0 * sr)
+                    let totalSamples = Int(audioArray.shape[0])
+
+                    var allTokens: [AlignedToken] = []
+                    var processedSamples: Float = 0
+                    var startSample = 0
+                    while startSample < totalSamples {
+                        let endSample = min(startSample + chunkSamples, totalSamples)
+                        let chunk = audioArray[startSample..<endSample].asType(.float16)
+                        let mel = try getLogMel(chunk, config: model.preprocessConfig)
+                        let inputMel = mel.ndim == 2 ? mel.expandedDimensions(axis: 0) : mel
+                        let (features, lengths) = model.encode(inputMel)
+
+                        let blankId = model.vocabulary.count
+                        let initLastToken: [Int?] = [blankId]
+                        let (tokenBatches, _) = try model.decode(
+                            features: features,
+                            lengths: lengths,
+                            lastToken: initLastToken,
+                            hiddenState: nil,
+                            config: decodingConfig
+                        )
+                        var tokens = tokenBatches.first ?? []
+
+                        // Offset tokens by chunk start
+                        if !tokens.isEmpty {
+                            let offsetSeconds = Float(startSample) / sr
+                            for i in 0..<tokens.count {
+                                var t = tokens[i]
+                                t.start += offsetSeconds
+                                tokens[i] = t
                             }
-                        },
-                        decodingConfig: decodingConfig
-                    )
+                            allTokens.append(contentsOf: tokens)
+                        }
+
+                        processedSamples = Float(endSample)
+                        let step = max(1, chunkSamples - overlapSamples)
+                        startSample = min(endSample, startSample + step)
+
+                        // Progress callback (avoid capturing mutated variables)
+                        let localProgress = min(processedSamples / Float(totalSamples), 1.0)
+                        Task { @MainActor in
+                            if serviceRef.isCancelled { return }
+                            serviceRef.progress = localProgress.isFinite ? localProgress : 0.0
+                        }
+                    }
+
+                    let sentences = TranscriptionService.tokensToSentences(allTokens)
+                    result = AlignedResult(sentences: sentences)
                 } else {
-                    print("Transcribing without chunking...")
-                    result = try model.transcribe(
-                        audioData: audioArray,
-                        decodingConfig: decodingConfig
+                    // Manual decode to ensure correct RNNT blank initialization
+                    print("Transcribing without chunking (manual decode)...")
+                    let processedAudio = audioArray.asType(.float16)
+                    let mel = try getLogMel(processedAudio, config: model.preprocessConfig)
+                    let inputMel = mel.ndim == 2 ? mel.expandedDimensions(axis: 0) : mel
+                    let (features, lengths) = model.encode(inputMel)
+
+                    // Initialize decoder with blank token as per RNNT (blank_as_pad)
+                    let blankId = model.vocabulary.count
+                    let initLastToken: [Int?] = [blankId]
+                    let (tokenBatches, _) = try model.decode(
+                        features: features,
+                        lengths: lengths,
+                        lastToken: initLastToken,
+                        hiddenState: nil,
+                        config: decodingConfig
                     )
+
+                    // Convert tokens to an AlignedResult (mirror library utility)
+                    let tokens = tokenBatches.first ?? []
+                    let sentences = TranscriptionService.tokensToSentences(tokens)
+                    result = AlignedResult(sentences: sentences)
                 }
                 print("Transcription completed")
 
@@ -576,4 +629,24 @@ enum TranscriptionError: Error {
     case contextInitializationFailed
     case audioConversionFailed
     case processingFailed
+}
+
+// MARK: - Local helpers for Parakeet alignment post-processing
+extension TranscriptionService {
+    nonisolated static func tokensToSentences(_ tokens: [AlignedToken]) -> [AlignedSentence] {
+        guard !tokens.isEmpty else { return [] }
+        var sentences: [AlignedSentence] = []
+        var current: [AlignedToken] = []
+        for tok in tokens {
+            current.append(tok)
+            if tok.text.contains(".") || tok.text.contains("!") || tok.text.contains("?") {
+                sentences.append(AlignedSentence(tokens: current))
+                current.removeAll()
+            }
+        }
+        if !current.isEmpty {
+            sentences.append(AlignedSentence(tokens: current))
+        }
+        return sentences
+    }
 }
